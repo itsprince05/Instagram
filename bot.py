@@ -72,13 +72,13 @@ def get_instagram_media_links(instagram_url):
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
-    if event.chat_id != ALLOWED_GROUP_ID:
+    if event.chat_id != ALLOWED_GROUP_ID and not event.is_private:
         return
     await event.respond("Hello! Send me an Instagram post URL here to extract media.")
 
 @bot.on(events.NewMessage(pattern='/update'))
 async def update_handler(event):
-    if event.chat_id != ALLOWED_GROUP_ID:
+    if event.chat_id != ALLOWED_GROUP_ID and not event.is_private:
         return
 
     msg = await event.reply("Checking for updates...")
@@ -106,8 +106,8 @@ async def update_handler(event):
 
 @bot.on(events.NewMessage)
 async def message_handler(event):
-    # Check if message is from the allowed group
-    if event.chat_id != ALLOWED_GROUP_ID:
+    # Check if message is from the allowed group or DM
+    if event.chat_id != ALLOWED_GROUP_ID and not event.is_private:
         return
 
     # Ignore commands (handled by their own handlers)
