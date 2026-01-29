@@ -127,18 +127,24 @@ async def message_handler(event):
     if not urls:
         return
 
-    # Filter out duplicates if needed, but sequential processing might be desired even for dupes if user intends it.
-    # We will process list as is.
+    # Deduplicate URLs while preserving order
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        if url not in seen:
+            unique_urls.append(url)
+            seen.add(url)
+    urls = unique_urls
 
     total_links = len(urls)
     
     for idx, current_url in enumerate(urls, 1):
-        status_msg = await event.reply(f"Processing {idx}/{total_links}\n{current_url}")
+        # Clean the URL first for display
+        cleaned_url = current_url.split('?')[0].rstrip('/')
+        
+        status_msg = await event.reply(f"Processing {idx}/{total_links}\n{cleaned_url}", link_preview=False)
         
         try:
-            # Clean the URL (remove query parameters and trailing slash)
-            cleaned_url = current_url.split('?')[0].rstrip('/')
-            
             # Extract media
             media_links = await asyncio.to_thread(get_instagram_media_links, current_url)
             
@@ -179,11 +185,14 @@ async def message_handler(event):
             
             # Finished processing this link, delete status message
             await status_msg.delete()
+            # Small delay to ensure clean sequential processing and avoid rate limits
+            await asyncio.sleep(1)
             
         except Exception as e:
             logger.error(f"Error in handler loop: {e}")
             await event.respond(f"Error processing {cleaned_url}")
             await status_msg.delete()
+            await asyncio.sleep(1)
 
 def main():
     logger.info("Bot is running...")
