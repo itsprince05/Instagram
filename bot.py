@@ -35,18 +35,15 @@ def get_instagram_media_links(instagram_url):
     Takes an Instagram post URL, queries media.mollygram.com,
     and returns a list of media download URLs found in the response.
     """
-    # Use cleaned URL for the API to avoid parameter issues and improve success rate
-    clean_url = instagram_url.split('?')[0].rstrip('/')
-    
     base_url = "https://media.mollygram.com/"
-    params = {'url': clean_url}
+    # Using the raw URL for data fetching as requested by the user
+    params = {'url': instagram_url}
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': 'https://mollygram.com/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
 
     try:
-        logger.info(f"Fetching data for: {clean_url}...")
+        logger.info(f"Fetching data for: {instagram_url}...")
         response = requests.get(base_url, params=params, headers=headers)
         response.raise_for_status()
         
