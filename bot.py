@@ -146,43 +146,32 @@ async def worker():
                 download_path = None
                 try:
                     # Download content to disk (Streamed)
-                    def download_media(url, path=None):
-                        with requests.get(url, stream=True) as r:
-                            r.raise_for_status()
-                            
-                            # Determine filename if not provided (temp logic to get ext)
-                            is_video = 'video' in r.headers.get('Content-Type', '')
-                            ext = 'mp4' if is_video else 'jpg'
-                            
-                            if path is None:
-                                # We need to return path and ext if not provided, but here we construct path outside
-                                return None, ext, is_video
-                                
-                            with open(path, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192): 
-                                    f.write(chunk)
-                            return True, ext, is_video
-
-                    # 1. Peek headers to determine extension and path
-                    # We do a quick head request or just stream start? 
-                    # Simpler: Just start the get in thread, use logic to define path, then write.
-                    # Since we need 'idx' and 'i' for filename, we do it all in one custom wrapper or split.
-                    
-                    # Let's do a cleaner custom function for the thread
+                    # 1. Download Helper
                     def process_download(url, base_filename):
-                         with requests.get(url, stream=True) as r:
-                            if r.status_code != 200:
-                                return None, None
-                            
-                            is_video = 'video' in r.headers.get('Content-Type', '')
-                            ext = 'mp4' if is_video else 'jpg'
-                            final_filename = f"{base_filename}.{ext}"
-                            final_path = os.path.join(DOWNLOAD_DIR, final_filename)
-                            
-                            with open(final_path, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192): 
-                                    f.write(chunk)
-                            return final_path, is_video
+                        # Headers to prevent 403 Forbidden on some CDNs/Wrappers
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                            'Referer': 'https://media.mollygram.com/'
+                        }
+                        
+                        try:
+                             with requests.get(url, stream=True, headers=headers, timeout=60) as r:
+                                if r.status_code != 200:
+                                    logger.error(f"Download failed: {r.status_code} for {url}")
+                                    return None, None
+                                
+                                is_video = 'video' in r.headers.get('Content-Type', '')
+                                ext = 'mp4' if is_video else 'jpg'
+                                final_filename = f"{base_filename}.{ext}"
+                                final_path = os.path.join(DOWNLOAD_DIR, final_filename)
+                                
+                                with open(final_path, 'wb') as f:
+                                    for chunk in r.iter_content(chunk_size=8192): 
+                                        f.write(chunk)
+                                return final_path, is_video
+                        except Exception as e:
+                            logger.error(f"Download exception: {e}")
+                            return None, None
 
                     base_name = f"{chat_id}_{idx}_{i}"
                     download_path, is_video = await asyncio.to_thread(process_download, link, base_name)
