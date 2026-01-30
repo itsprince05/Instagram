@@ -35,69 +35,48 @@ JOB_QUEUE = asyncio.Queue()
 
 def get_instagram_media_links(instagram_url):
     """
-    Takes an Instagram post URL, queries media.mollygram.com,
-    and returns a list of media download URLs found in the response.
+    Uses Cobalt API to fetch media links.
+    Fallback to Mollygram if Cobalt fails (optional/removed for now to fix immediate issue).
     """
-    # Use cleaned URL for the API to avoid parameter issues and improve success rate
-    clean_url = instagram_url.split('?')[0].rstrip('/')
-    
-    base_url = "https://media.mollygram.com/"
-    # URGENT FIX: Use the RAW URL (instagram_url) for the API request as requested by the user.
-    # Do NOT use clean_url for the params.
-    params = {'url': instagram_url}
-    
-    # Simple headers
+    cobalt_url = "https://api.cobalt.tools/api/json"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    payload = {
+        "url": instagram_url
     }
 
-    # Retry logic
-    for attempt in range(3):
-        try:
-            logger.info(f"Fetching data for: {instagram_url} (Attempt {attempt+1})")
-            response = requests.get(base_url, params=params, headers=headers, timeout=10)
+    try:
+        # 1. Try Cobalt
+        response = requests.post(cobalt_url, json=payload, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            status = data.get("status")
             
-            if response.status_code != 200:
-                logger.error(f"API returned status {response.status_code}")
-                # If 429/403, maybe wait a bit
-                if response.status_code in [429, 503]:
-                    time.sleep(2)
-                    continue
-                continue # Try again or fail
-            
-            try:
-                data = response.json()
-            except Exception:
-                logger.error(f"Error: content is not valid JSON. Content: {response.text[:200]}")
-                continue
-
-            if data.get("status") != "ok":
-                logger.error(f"Error from API: {data.get('status')}")
-                continue
-
-            html_content = data.get("html", "")
-            if not html_content:
-                continue
-
-            soup = BeautifulSoup(html_content, 'html.parser')
             media_links = []
             
-            download_buttons = soup.find_all('a', id='download-video')
-            if not download_buttons:
-                download_buttons = soup.find_all('a', class_='bg-gradient-success')
-
-            for btn in download_buttons:
-                href = btn.get('href')
-                if href:
-                    media_links.append(href)
-
+            if status == "stream":
+                # Single file
+                media_links.append(data.get("url"))
+            elif status == "picker":
+                # Multiple files (carousel)
+                for item in data.get("picker", []):
+                    media_links.append(item.get("url"))
+            elif status == "redirect":
+                 media_links.append(data.get("url"))
+            
             if media_links:
                 return media_links
-        
-        except Exception as e:
-            logger.error(f"Request failed (Attempt {attempt+1}): {e}")
-            time.sleep(1)
-    
+        else:
+            logger.error(f"Cobalt API failed with status {response.status_code}")
+
+    except Exception as e:
+        logger.error(f"Cobalt Request failed: {e}")
+        time.sleep(1)
+
     return []
 
 async def worker():
@@ -110,7 +89,7 @@ async def worker():
         task = await JOB_QUEUE.get()
         chat_id, original_url, idx, total = task
         
-        # Determine Cleaned URL
+        # Determine Cleaned URL (for caption only)
         cleaned_url = original_url.split('?')[0].rstrip('/')
         
         # Send Status Message
@@ -126,9 +105,15 @@ async def worker():
             media_links = await asyncio.to_thread(get_instagram_media_links, original_url)
             
             if not media_links:
-                await bot.send_message(ERROR_GROUP_ID, f"Error - No Media Found\n{cleaned_url}", link_preview=False)
+                # ERROR: Send RAW URL
+                await bot.send_message(ERROR_GROUP_ID, f"Error - No Media Found\n{original_url}", link_preview=False)
                 await status_msg.delete()
                 JOB_QUEUE.task_done()
+                
+                # Check for batch completion even on error
+                if idx == total:
+                    await bot.send_message(chat_id, f"{total} links processed.")
+                    
                 await asyncio.sleep(1)
                 continue
 
@@ -217,7 +202,13 @@ async def worker():
                 pass
         
         # Mark task as done and wait a bit
+        # Mark task as done and wait a bit
         JOB_QUEUE.task_done()
+        
+        # Check for batch completion for successful case
+        if idx == total:
+             await bot.send_message(chat_id, f"{total} links processed.")
+             
         await asyncio.sleep(1)
 
 
