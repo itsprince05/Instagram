@@ -75,6 +75,32 @@ async def export_session(event):
     except Exception as e:
         await event.respond(f"❌ Error exporting: {e}")
 
+@bot.on(events.NewMessage(pattern='/update'))
+async def update_handler(event):
+    # Allow in Media Group or Private DM
+    if event.chat_id == GROUP_MEDIA or event.is_private:
+        msg = await event.respond("🔄 **Update Requested**\n⬇️ Pulling latest code...")
+        try:
+            # 1. Git Pull
+            proc = await asyncio.create_subprocess_shell(
+                "git pull",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            
+            if proc.returncode == 0:
+                await msg.edit(f"✅ **Git Pull Success**\n`{stdout.decode().strip()}`\n\n♻️ Restarting System...")
+                # 2. Restart Service
+                # Execute blocking to ensure it triggers before we die
+                import subprocess
+                subprocess.Popen(["sudo", "systemctl", "restart", "extracter"])
+                sys.exit(0)
+            else:
+                await msg.edit(f"❌ **Git Pull Failed**\n`{stderr.decode()}`")
+        except Exception as e:
+            await msg.edit(f"❌ **Error:** {e}")
+
 @bot.on(events.NewMessage())
 async def message_handler(event):
     # Ignore commands
