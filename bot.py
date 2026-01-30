@@ -37,6 +37,7 @@ user = TelegramClient("user_session", API_ID, API_HASH)
 # State
 LOGIN_STATE = {'phone': None, 'otp_requested': False, 'hash': None}
 LINK_QUEUE = asyncio.Queue()
+SEEN_LINKS = set()
 IS_PROCESSING = False
 
 # --- Controller Bot (Interacts with YOU) ---
@@ -162,15 +163,22 @@ async def message_handler(event):
     if urls:
         count = 0
         for url in urls:
-            await LINK_QUEUE.put(url)
-            count += 1
+            # Deduplicate: Clean duplication query params might be smart, but exact match for now
+            if url not in SEEN_LINKS:
+                SEEN_LINKS.add(url)
+                await LINK_QUEUE.put(url)
+                count += 1
         
-        q_size = LINK_QUEUE.qsize()
-        await event.respond(f"✅ Added {count} links to queue.\nTotal in Queue: {q_size}\n\nProcessing started.")
-        
-        global IS_PROCESSING
-        if not IS_PROCESSING:
-            asyncio.create_task(process_queue(event.chat_id))
+        if count > 0:
+            q_size = LINK_QUEUE.qsize()
+            await event.respond(f"✅ Added {count} new links to queue.\nTotal in Queue: {q_size}\n\nProcessing started.")
+            
+            global IS_PROCESSING
+            if not IS_PROCESSING:
+                asyncio.create_task(process_queue(event.chat_id))
+        else:
+            # Inform user if ignored to reduce confusion
+            await event.respond("⚠️ Ignored duplicates. These links are already in queue or processed.")
 
 # --- User Client Processing Logic ---
 
