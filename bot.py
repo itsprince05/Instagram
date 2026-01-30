@@ -14,6 +14,8 @@ API_ID = 38659771
 API_HASH = "6178147a40a23ade99f8b3a45f00e436"
 BOT_TOKEN = "7966844330:AAE10tysbFmMnL3dIQhf1RHrNEwRUrpDJOU"
 ALLOWED_GROUP_ID = -1003759432523
+MEDIA_GROUP_ID = -1003759432523
+ERROR_GROUP_ID = -1003822781655
 DOWNLOAD_DIR = "downloads"
 
 # Logger setup
@@ -124,7 +126,7 @@ async def worker():
             media_links = await asyncio.to_thread(get_instagram_media_links, original_url)
             
             if not media_links:
-                await bot.send_message(chat_id, f"Error - No Media Found\n{cleaned_url}", link_preview=False)
+                await bot.send_message(ERROR_GROUP_ID, f"Error - No Media Found\n{cleaned_url}", link_preview=False)
                 await status_msg.delete()
                 JOB_QUEUE.task_done()
                 await asyncio.sleep(1)
@@ -154,12 +156,12 @@ async def worker():
                             f.write(r.content)
                         
                         # Upload from disk
-                        await bot.send_file(chat_id, download_path, caption=caption, force_document=False)
+                        await bot.send_file(MEDIA_GROUP_ID, download_path, caption=caption, force_document=False)
                     else:
-                        await bot.send_message(chat_id, f"Failed to download a file from: {cleaned_url}")
+                        await bot.send_message(ERROR_GROUP_ID, f"Failed to download a file from: {cleaned_url}")
                 except Exception as e:
                     logger.error(f"Error sending file: {e}")
-                    await bot.send_message(chat_id, f"Failed to upload a file from: {cleaned_url}")
+                    await bot.send_message(ERROR_GROUP_ID, f"Failed to upload a file from: {cleaned_url}")
                 finally:
                     # Clean up file from server
                     if download_path and os.path.exists(download_path):
@@ -169,7 +171,7 @@ async def worker():
 
         except Exception as e:
             logger.error(f"Worker Error: {e}")
-            await bot.send_message(chat_id, f"Error processing {cleaned_url}")
+            await bot.send_message(ERROR_GROUP_ID, f"Error processing {cleaned_url}")
             # Try to delete status message if exists
             try:
                 await status_msg.delete()
@@ -207,7 +209,12 @@ async def update_handler(event):
             await msg.edit(f"Bot is already up to date.\n`{output}`")
         else:
             await msg.edit(f"Update successful!\n`{output}`\nRestarting bot...")
-            os.execl(sys.executable, sys.executable, *sys.argv)
+            
+            # Prepare args for restart, ensuring 'updated' flag is present
+            new_args = [arg for arg in sys.argv if arg != 'updated']
+            new_args.append('updated')
+            
+            os.execl(sys.executable, sys.executable, *new_args)
             
     except Exception as e:
         await msg.edit(f"Update failed: {e}")
@@ -254,6 +261,11 @@ async def message_handler(event):
 
 def main():
     logger.info("Bot is running...")
+    
+    # Check if restarted after update
+    if 'updated' in sys.argv:
+        bot.loop.create_task(bot.send_message(MEDIA_GROUP_ID, "Bot is updated and running"))
+
     # Start the worker task loop
     bot.loop.create_task(worker())
     bot.run_until_disconnected()
