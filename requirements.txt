@@ -3,4 +3,6 @@ requests
 beautifulsoup4
 instaloader
 yt-dlp
+selenium
+webdriver_manager
 
