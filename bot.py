@@ -35,49 +35,64 @@ JOB_QUEUE = asyncio.Queue()
 
 def get_instagram_media_links(instagram_url):
     """
-    Uses Cobalt API to fetch media links.
-    Fallback to Mollygram if Cobalt fails (optional/removed for now to fix immediate issue).
+    Takes an Instagram post URL, queries media.mollygram.com,
+    and returns a list of media download URLs found in the response.
     """
-    cobalt_url = "https://api.cobalt.tools/api/json"
+    
+    base_url = "https://media.mollygram.com/"
+    
+    # Use the raw URL as requested
+    params = {'url': instagram_url}
+    
+    # Headers to mimic a browser
     headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    payload = {
-        "url": instagram_url
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
 
     try:
-        # 1. Try Cobalt
-        response = requests.post(cobalt_url, json=payload, headers=headers, timeout=15)
+        # Increase timeout slightly
+        logger.info(f"Fetching from Mollygram: {instagram_url}")
+        response = requests.get(base_url, params=params, headers=headers, timeout=30)
         
-        if response.status_code == 200:
+        if response.status_code != 200:
+            logger.error(f"API returned status {response.status_code}")
+            return []
+        
+        try:
             data = response.json()
-            status = data.get("status")
-            
-            media_links = []
-            
-            if status == "stream":
-                # Single file
-                media_links.append(data.get("url"))
-            elif status == "picker":
-                # Multiple files (carousel)
-                for item in data.get("picker", []):
-                    media_links.append(item.get("url"))
-            elif status == "redirect":
-                 media_links.append(data.get("url"))
-            
-            if media_links:
-                return media_links
-        else:
-            logger.error(f"Cobalt API failed with status {response.status_code}")
+        except Exception:
+            logger.error(f"Error: content is not valid JSON. Content: {response.text[:200]}")
+            return []
 
+        if data.get("status") != "ok":
+            logger.error(f"Error from API (Status not ok): {data}")
+            return []
+
+        html_content = data.get("html", "")
+        if not html_content:
+            return []
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+        media_links = []
+        
+        # Based on user logs, there are multiple elements with id="download-video" in carousels.
+        # BS4 finds all of them.
+        download_buttons = soup.find_all('a', id='download-video')
+        
+        # Fallback if ID strategy fails (though logs show IDs are there)
+        if not download_buttons:
+             download_buttons = soup.find_all('a', class_='bg-gradient-success')
+
+        for btn in download_buttons:
+            href = btn.get('href')
+            if href:
+                media_links.append(href)
+
+        return media_links
+    
     except Exception as e:
-        logger.error(f"Cobalt Request failed: {e}")
-        time.sleep(1)
-
-    return []
+        logger.error(f"Request failed: {e}")
+        return []
 
 async def worker():
     """
