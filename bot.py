@@ -180,21 +180,17 @@ async def handle_target_response(event):
     except:
         is_target = False
 
-    if is_target:
-        # Logic: If it has media, KEEP it. If text only, DELETE it.
-        if event.message.media:
-            # It's the video/image we want.
-            # Optional: Forward back to the controller chat? 
-            # User said: "mera user account check karega ki media ke alawa jitna bhi msg hai wo sab delete kar de"
-            # Implies we just keep media in that chat.
-            pass
-        else:
-            # Text message (ads, "processing", "join channel", etc)
-            try:
-                await event.delete()
-                logger.info("Deleted garbage text message.")
-            except Exception as e:
-                logger.error(f"Failed to delete garbage: {e}")
+        # User requested to NOT delete messages ("koi bhi msg delete mar karo" -> delete mat karo)
+        # if event.message.media:
+        #    pass
+        # else:
+        #    # Text message (ads, "processing", "join channel", etc)
+        #    try:
+        #        await event.delete()
+        #        logger.info("Deleted garbage text message.")
+        #    except Exception as e:
+        #        logger.error(f"Failed to delete garbage: {e}")
+        pass
 
 # --- Main Entry ---
 if __name__ == '__main__':
