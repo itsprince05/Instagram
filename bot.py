@@ -153,20 +153,28 @@ async def process_queue(notify_chat_id):
 
     await bot.send_message(notify_chat_id, f"🚀 Starting batch processing with {TARGET_BOT_USERNAME}...")
     
+    # Ensure client is connected once before loops
+    if not user.is_connected():
+        await user.connect()
+
     while not LINK_QUEUE.empty():
         url = await LINK_QUEUE.get()
         try:
-            # 1. Send Link to Target Bot
+            # 1. Send Link to Target Bot using the single shared 'user' instance
             await user.send_message(TARGET_BOT_USERNAME, url)
             logger.info(f"Sent {url} to {TARGET_BOT_USERNAME}")
             
-            # 2. Wait for cooldown (User requested 10 seconds)
+            # 2. Wait for cooldown
             await asyncio.sleep(10) 
             
         except Exception as e:
-            await bot.send_message(notify_chat_id, f"❌ Error processing link: {e}")
-            await asyncio.sleep(5)
-
+            err_msg = str(e)
+            if "database is locked" in err_msg:
+                 err_msg = "Critical DB Lock. Retrying in 5s..."
+                 await asyncio.sleep(5) # Backoff
+            
+            await bot.send_message(notify_chat_id, f"❌ Error processing link: {err_msg}")
+            
     await bot.send_message(notify_chat_id, "✅ Batch processing complete!")
     IS_PROCESSING = False
 
