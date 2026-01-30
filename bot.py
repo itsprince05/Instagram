@@ -163,7 +163,6 @@ async def message_handler(event):
     if urls:
         count = 0
         for url in urls:
-            # Deduplicate: Clean duplication query params might be smart, but exact match for now
             if url not in SEEN_LINKS:
                 SEEN_LINKS.add(url)
                 await LINK_QUEUE.put(url)
@@ -176,9 +175,7 @@ async def message_handler(event):
             global IS_PROCESSING
             if not IS_PROCESSING:
                 asyncio.create_task(process_queue(event.chat_id))
-        else:
-            # Inform user if ignored to reduce confusion
-            await event.respond("⚠️ Ignored duplicates. These links are already in queue or processed.")
+        # Removed "Ignored duplicates" message as requested
 
 # --- User Client Processing Logic ---
 
@@ -186,8 +183,7 @@ async def process_queue(notify_chat_id):
     global IS_PROCESSING
     IS_PROCESSING = True
     
-    await bot.send_message(notify_chat_id, f"🚀 Batch Processing")
-    
+    # ensure client connected...
     if not user.is_connected():
         await user.connect()
 
@@ -198,78 +194,103 @@ async def process_queue(notify_chat_id):
             async with user.conversation(TARGET_PRIMARY, timeout=60) as conv:
                 await conv.send_message(url)
                 
-                # The bot sends multiple messages:
-                # 1. "Started downloading..."
-                # 2. Emoji
-                # 3. Final Result (Media OR Error)
-                
+                # --- Waiting Logic ---
                 final_response = None
+                media_list = [] # Store all media found
                 
-                # Loop to consume incoming messages until we get a result
                 start_time = asyncio.get_event_loop().time()
                 while (asyncio.get_event_loop().time() - start_time) < 45:
                     try:
+                        # Wait for next message
                         response = await conv.get_response()
                     except asyncio.TimeoutError:
                         break
                     
+                    # 1. Capture Media (Primary Goal)
                     if response.media:
-                        final_response = response
-                        break
-                    
+                        media_list.append(response.media)
+                        # If we found media, we don't break immediately anymore.
+                        # We wait a bit to see if MORE media comes (Carousel/Album).
+                        # But we can assume if we get media, we are on the right track.
+                        # We switch to a "Harvest Mode" with short timeout.
+                        continue
+
                     text_lower = response.text.lower() if response.text else ""
                     
-                    # Check for known "Processing" messages to ignore
+                    # 2. Ignore Status Messages
                     if "я начал качать" in text_lower or "подождите" in text_lower or "film_4k_bot" in text_lower:
                         continue
-                    
-                    # Check for Error Signature
-                    is_error_text = False
+                        
+                    # 3. Check for specific Error
+                    is_error = False
                     for sig in ERROR_SIGNATURES:
                         if sig.lower() in text_lower:
-                            is_error_text = True
+                            is_error = True
                             break
                     
-                    if is_error_text:
-                        final_response = response
-                        break
+                    if is_error:
+                        # If we already have media (rare), maybe this is a partial error? 
+                        # But usually error is standalone.
+                        if not media_list:
+                            final_response = response # Mark as error
+                        break 
                         
-                    # If it's just an emoji or very short text (spacer), ignore
-                    if len(response.text) < 5:
-                        continue
-                        
-                    # If we got here, it might be an unknown text response, treat as potential error/status
-                    # But let's keep waiting in case media comes next
-                    # (Unless it matches strict error, which we caught above)
-                    
-                # --- Decision Logic ---
-                if final_response and final_response.media:
-                    # ✅ Success
+                # --- Harvest Mode for Albums ---
+                # If we have at least 1 media, try to fetch neighbors quickly
+                if media_list:
+                    # Try to get more messages quickly in case it's a stream of photos
                     try:
-                        await user.send_file(
-                            GROUP_MEDIA, 
-                            final_response.media, 
-                            caption=f"{url}"
-                        )
-                        await bot.send_message(notify_chat_id, f"✅ Saved: {url}")
+                        while True:
+                            # Very short timeout to catch rapid-fire photos
+                            extra = await conv.get_response(timeout=2)
+                            if extra.media:
+                                media_list.append(extra.media)
+                            else:
+                                break
+                    except asyncio.TimeoutError:
+                        pass # Done harvesting
+
+                # --- Decision Logic ---
+                if media_list:
+                    # ✅ Success: Send ALL media
+                    try:
+                        # Send the first one with caption
+                        await user.send_file(GROUP_MEDIA, media_list[0], caption=f"{url}")
+                        
+                        # Send the rest without caption
+                        for m in media_list[1:]:
+                            await user.send_file(GROUP_MEDIA, m)
+                            
+                        # Silent success (Log only)
+                        logger.info(f"✅ Saved {len(media_list)} items for: {url}")
+                        
                     except Exception as e:
                         logger.error(f"Copy Error: {e}")
-                else:
-                    # ❌ Error or Timeout
+                
+                elif final_response:
+                    # ❌ Known Error found
                     # Send to Fallback
                     await user.send_message(TARGET_FALLBACK, url)
-                    
                     # Log to Error Group
                     await user.send_message(GROUP_ERROR, f"Error\n{url}")
-                    
-                    await bot.send_message(notify_chat_id, f"⚠️ Error -> Fallback: {url}")
+                    # Silent failure logic
+                    logger.warning(f"Error -> Fallback: {url}")
+                
+                else:
+                    # ❌ Timeout / No Media / No Known Error
+                    # Treat as Error -> Fallback
+                    await user.send_message(TARGET_FALLBACK, url)
+                    await user.send_message(GROUP_ERROR, f"Error (Timeout/Unknown)\n{url}")
+                    logger.warning(f"Timeout/Unknown -> Fallback: {url}")
 
             await asyncio.sleep(5)
 
         except Exception as e:
             logger.error(f"Logic Error: {e}")
             
-    await bot.send_message(notify_chat_id, "✅ Batch Done!")
+    # await bot.send_message(notify_chat_id, "✅ Batch Done!") # Optional: Keep "Done" or remove? User wants silence. 
+    # Let's keep "Batch Done" just so he knows when to send more.
+    await bot.send_message(notify_chat_id, "✅ Batch Done!") 
     IS_PROCESSING = False
 
 # --- Main Entry ---
