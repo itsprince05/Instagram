@@ -183,6 +183,8 @@ async def process_queue(notify_chat_id):
     global IS_PROCESSING
     IS_PROCESSING = True
     
+    import io # Local import to ensure it exists
+    
     # ensure client connected...
     if not user.is_connected():
         await user.connect()
@@ -194,7 +196,6 @@ async def process_queue(notify_chat_id):
             async with user.conversation(TARGET_PRIMARY, timeout=60) as conv:
                 await conv.send_message(url)
                 
-                # --- Waiting Logic ---
                 final_response = None
                 media_list = [] 
                 
@@ -205,18 +206,14 @@ async def process_queue(notify_chat_id):
                     except asyncio.TimeoutError:
                         break
                     
-                    # 1. Capture Media 
                     if response.media:
                         media_list.append(response.media)
                         continue
 
                     text_lower = response.text.lower() if response.text else ""
-                    
-                    # 2. Ignore Status Messages
                     if "я начал качать" in text_lower or "подождите" in text_lower or "film_4k_bot" in text_lower:
                         continue
                         
-                    # 3. Check for specific Error
                     is_error = False
                     for sig in ERROR_SIGNATURES:
                         if sig.lower() in text_lower:
@@ -228,7 +225,6 @@ async def process_queue(notify_chat_id):
                             final_response = response 
                         break 
                         
-                # --- Harvest Mode for Albums ---
                 if media_list:
                     try:
                         while True:
@@ -242,37 +238,44 @@ async def process_queue(notify_chat_id):
 
                 # --- Decision Logic ---
                 if media_list:
-                    # ✅ Success: Send ALL media via BOT
+                    clean_url = url.split("?")[0]
+                    files_to_send = []
+                    
                     try:
+                        # 1. Download ALL items to memory first
                         for m in media_list:
-                            # 1. Download to local (User Client)
-                            path = await user.download_media(m)
-                            
-                            # 2. Upload to Group (Controller Bot)
-                            # Caption ON for ALL items
-                            await bot.send_file(GROUP_MEDIA, path, caption=f"{url}")
-                            
-                            # 3. Cleanup
-                            os.remove(path)
-                            
-                        logger.info(f"✅ Saved {len(media_list)} items for: {url}")
+                            buffer = io.BytesIO()
+                            await user.download_media(m, file=buffer)
+                            buffer.seek(0)
+                            # Telethon needs a 'name' attribute sometimes for buffers to guess mime type
+                            # We can try setting a dummy name or just passing the buffer
+                            # Often helpful to name it based on implicit type
+                            buffer.name = "media_item" 
+                            files_to_send.append(buffer)
+                        
+                        # 2. Send as ALBUM (Pass list of files)
+                        # The caption applies to the album
+                        await bot.send_file(
+                            GROUP_MEDIA, 
+                            files_to_send, 
+                            caption=clean_url
+                        )
+                        
+                        logger.info(f"✅ Saved Album ({len(files_to_send)} items) for: {clean_url}")
                         
                     except Exception as e:
-                        logger.error(f"Copy/Upload Error: {e}")
+                        logger.error(f"Transfer Error: {e}")
+                    finally:
+                        # Cleanup buffers
+                        for f in files_to_send:
+                            f.close()
                 
                 elif final_response:
-                    # ❌ Known Error found
-                    # 1. Send to Fallback (Must be User -> Bot)
                     await user.send_message(TARGET_FALLBACK, url)
-                    
-                    # 2. Log to Error Group (Must be BOT)
-                    # Link Preview OFF
                     await bot.send_message(GROUP_ERROR, f"Error\n{url}", link_preview=False)
-                    
                     logger.warning(f"Error -> Fallback: {url}")
                 
                 else:
-                    # ❌ Timeout / Unknown
                     await user.send_message(TARGET_FALLBACK, url)
                     await bot.send_message(GROUP_ERROR, f"Error (Timeout/Unknown)\n{url}", link_preview=False)
                     logger.warning(f"Timeout/Unknown -> Fallback: {url}")
