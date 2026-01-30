@@ -153,9 +153,9 @@ async def process_queue(notify_chat_id):
     global IS_PROCESSING
     IS_PROCESSING = True
     
-    await bot.send_message(notify_chat_id, f"🚀 Batch Processing Started:\nPrimary: {TARGET_PRIMARY}\nFallback: {TARGET_FALLBACK}")
+    await bot.send_message(notify_chat_id, f"🚀 Batch Processing:")
     
-    # Ensure client is connected once before loops
+    # Ensure client is connected
     if not user.is_connected():
         await user.connect()
 
@@ -163,11 +163,11 @@ async def process_queue(notify_chat_id):
         url = await LINK_QUEUE.get()
         try:
             # --- Step 1: Send to Primary Bot ---
-            logger.info(f"Processing {url} via {TARGET_PRIMARY}")
+            logger.info(f"Processing {url}")
             async with user.conversation(TARGET_PRIMARY, timeout=60) as conv:
                 await conv.send_message(url)
                 
-                # Smart wait logic: Wait for media or final error
+                # Check response
                 attempts = 0
                 final_response = None
                 
@@ -182,6 +182,7 @@ async def process_queue(notify_chat_id):
                         break 
                     
                     text_lower = response.text.lower() if response.text else ""
+                    # Ignore transient status
                     if "processing" in text_lower or "downloading" in text_lower or "wait" in text_lower:
                         attempts += 1
                         continue
@@ -189,61 +190,49 @@ async def process_queue(notify_chat_id):
                     final_response = response
                     break
 
-                # --- Analyze Result ---
+                # --- Decision Logic ---
                 if final_response and final_response.media:
-                    # ✅ SUCCESS: Media Found
-                    logger.info("Primary Bot sent Media. Forwarding...")
+                    # ✅ Case A: Media Received -> Send to Video Group
                     try:
-                        # Forward/Send to Media Group with Caption
                         await user.send_file(
                             GROUP_MEDIA, 
                             final_response.media, 
                             caption=f"{url}"
                         )
                         await bot.send_message(notify_chat_id, f"✅ Saved: {url}")
-                        
                     except Exception as e:
                         logger.error(f"Failed to copy to group: {e}")
-                        await bot.send_message(notify_chat_id, f"⚠️ Downloaded but failed to forward: {e}")
                         
                 else:
-                    # ❌ FAILURE / TEXT ERROR
-                    is_known_error = False
-                    text_content = final_response.text if final_response else "No response"
+                    # Case B: Text Response
+                    text_content = final_response.text if final_response else ""
                     
+                    # Check for the SPECIFIC Russian error
+                    is_target_error = False
                     for sig in ERROR_SIGNATURES:
-                        if sig.lower() in text_content.lower():
-                            is_known_error = True
+                        if sig in text_content: # Case sensitive search often better for specific phrases
+                            is_target_error = True
                             break
                     
-                    # If unsure (no media, and short text), treat as error
-                    if not is_known_error and (not final_response or len(text_content) < 200):
-                        is_known_error = True
-
-                    if is_known_error:
-                        logger.warning(f"Primary failed. Trying Fallback: {TARGET_FALLBACK}")
-                        
-                        # 1. Send to Fallback Bot (Fire and Forget)
+                    # User: "jis url ke reply me bot ye bhejega ... wo error link hai usko error group aur 2nd bot ko bhejna hai bas"
+                    if is_target_error:
+                        # 1. Send to Fallback Bot
                         await user.send_message(TARGET_FALLBACK, url)
                         
-                        # 2. Log to Error Group
-                        try:
-                            await user.send_message(
-                                GROUP_ERROR, 
-                                f"⚠️ **Error (Primary Failed)**\nURL: {url}\nReason: {text_content[:100]}...\n\nSent to: {TARGET_FALLBACK}",
-                                link_preview=False
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to log to error group: {e}")
+                        # 2. Send "Error\nurl" to Error Group
+                        await user.send_message(GROUP_ERROR, f"Error\n{url}")
                         
-                        await bot.send_message(notify_chat_id, f"⚠️ Primary failed, forwarded to Fallback: {url}")
+                        await bot.send_message(notify_chat_id, f"⚠️ Error found -> Forwarded to Fallback: {url}")
+                    else:
+                        # Unknown state (neither media nor specific error)
+                        # Do nothing or just log locally
+                        logger.warning(f"Unknown response for {url}: {text_content[:50]}...")
 
             # Cooldown
             await asyncio.sleep(5)
 
         except Exception as e:
             logger.error(f"Processing Logic Error: {e}")
-            await bot.send_message(notify_chat_id, f"❌ Crash for {url}: {e}")
             
     await bot.send_message(notify_chat_id, "✅ Batch Done!")
     IS_PROCESSING = False
