@@ -183,7 +183,6 @@ async def process_queue(notify_chat_id):
     global IS_PROCESSING
     IS_PROCESSING = True
     
-    # ensure client connected...
     if not user.is_connected():
         await user.connect()
         
@@ -198,29 +197,38 @@ async def process_queue(notify_chat_id):
 
     while not LINK_QUEUE.empty():
         url = await LINK_QUEUE.get()
+        messages_to_cleanup = [] 
+        
         try:
             logger.info(f"Processing {url}")
             async with user.conversation(TARGET_PRIMARY, timeout=60) as conv:
-                await conv.send_message(url)
+                request_msg = await conv.send_message(url)
+                messages_to_cleanup.append(request_msg.id)
                 
                 final_response = None
                 media_list = [] 
                 
+                # --- Phase 1: Search for FIRST Media or Error ---
                 start_time = asyncio.get_event_loop().time()
                 while (asyncio.get_event_loop().time() - start_time) < 45:
                     try:
                         response = await conv.get_response()
+                        messages_to_cleanup.append(response.id)
                     except asyncio.TimeoutError:
                         break
                     
                     if response.media:
                         media_list.append(response.media)
-                        continue
+                        # CRITICAL FIX: Found media? Stop waiting! 
+                        # Go to Harvest Phase immediately.
+                        break 
 
                     text_lower = response.text.lower() if response.text else ""
+                    # Ignore status text
                     if "я начал качать" in text_lower or "подождите" in text_lower or "film_4k_bot" in text_lower:
                         continue
                         
+                    # Check Error
                     is_error = False
                     for sig in ERROR_SIGNATURES:
                         if sig.lower() in text_lower:
@@ -228,77 +236,86 @@ async def process_queue(notify_chat_id):
                             break
                     
                     if is_error:
-                        if not media_list:
-                            final_response = response 
+                        final_response = response 
                         break 
                         
+                # --- Phase 2: Fast Harvest (Albums) ---
                 if media_list:
+                    # Scan for Album parts with very short timeout
                     try:
                         while True:
-                            extra = await conv.get_response(timeout=2)
+                            extra = await conv.get_response(timeout=1.0) # 1 sec wait max
+                            messages_to_cleanup.append(extra.id)
+                            
                             if extra.media:
                                 media_list.append(extra.media)
-                            else:
-                                break
+                            # If text comes after media (e.g. "Done"), we just catch it for cleanup
+                            # and loop again just in case there's more media.
                     except asyncio.TimeoutError:
-                        pass 
+                        pass # Harvest complete
 
-                # --- Decision Logic ---
+                # --- Phase 3: Action ---
                 if media_list:
                     clean_url = url.split("?")[0]
                     
                     try:
-                        # BRIDGE STRATEGY: User -> Bot -> Group (Instant)
+                        # BRIDGE STRATEGY: User -> Bot -> Group
                         
-                        # 1. User sends media to Bot (Private DM)
-                        #    This re-uses the file reference on Telegram servers (Zero Upload)
+                        # A. User sends to Bot (Private)
                         bridge_msg = await user.send_file(
                             bot_info.username, 
                             media_list, 
                             caption="bridge_transfer"
                         )
                         
-                        # 2. Bot grabs the message(s) from its DM
-                        #    We fetch the latest N messages where N = len(media_list)
-                        #    We wait a brief moment to ensure propagation, though usually instant
-                        await asyncio.sleep(0.5) 
-                        
+                        # B. Bot picks it up
+                        await asyncio.sleep(0.3) 
                         bridge_msgs = await bot.get_messages(user_info.id, limit=len(media_list))
-                        
-                        # Correct order and extract media
-                        # get_messages returns newest first, so we reverse to match order
                         bridge_msgs.reverse() 
                         media_refs = [m.media for m in bridge_msgs if m.media]
                         
                         if media_refs:
-                            # 3. Bot sends to Group (Instant)
+                            # C. Bot sends to Group (Clean Caption)
                             await bot.send_file(
                                 GROUP_MEDIA, 
                                 media_refs, 
                                 caption=clean_url
                             )
-                            logger.info(f"✅ Saved (Bridge) {len(media_refs)} items: {clean_url}")
+                            logger.info(f"✅ Saved (Bridge) {len(media_refs)} items")
                             
-                            # 4. Cleanup Bridge Messages (Bot deletes them)
+                            # D. Bot Cleanup
                             await bot.delete_messages(user_info.id, bridge_msgs)
+                            
+                            # E. User Cleanup (1st Bot Chat)
+                            if messages_to_cleanup:
+                                await user.delete_messages(TARGET_PRIMARY, messages_to_cleanup)
+                                
                         else:
-                            logger.error("Bridge failed: Bot didn't find the media in DM")
+                            logger.error("Bridge: No media found")
                         
                     except Exception as e:
-                        logger.error(f"Bridge Transfer Error: {e}")
-                        # Fallback (Slow Method)? No, just log error for now to keep code clean
+                        logger.error(f"Bridge Error: {e}")
                 
                 elif final_response:
+                    # Error Handling
                     await user.send_message(TARGET_FALLBACK, url)
                     await bot.send_message(GROUP_ERROR, f"Error\n{url}", link_preview=False)
                     logger.warning(f"Error -> Fallback: {url}")
+                    
+                    # Cleanup failed attempt too (Optional, but keeps chat clean)
+                    if messages_to_cleanup:
+                         await user.delete_messages(TARGET_PRIMARY, messages_to_cleanup)
                 
                 else:
+                    # Timeout/Unknown
                     await user.send_message(TARGET_FALLBACK, url)
-                    await bot.send_message(GROUP_ERROR, f"Error (Timeout/Unknown)\n{url}", link_preview=False)
-                    logger.warning(f"Timeout/Unknown -> Fallback: {url}")
+                    await bot.send_message(GROUP_ERROR, f"Error (Timeout)\n{url}", link_preview=False)
+                    logger.warning(f"Timeout -> Fallback: {url}")
+                    
+                    if messages_to_cleanup:
+                         await user.delete_messages(TARGET_PRIMARY, messages_to_cleanup)
 
-            await asyncio.sleep(4) # Slight cooldown
+            await asyncio.sleep(2)
 
         except Exception as e:
             logger.error(f"Logic Error: {e}")
