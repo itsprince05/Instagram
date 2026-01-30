@@ -77,7 +77,7 @@ async def export_session(event):
 
 @bot.on(events.NewMessage(pattern='/update'))
 async def update_handler(event):
-    # Allow in Media Group or Private DM
+    # Allow in Media Group (anyone) or Private DM
     if event.chat_id == GROUP_MEDIA or event.is_private:
         msg = await event.respond("🔄 **Update Requested**\n⬇️ Pulling latest code...")
         try:
@@ -92,7 +92,6 @@ async def update_handler(event):
             if proc.returncode == 0:
                 await msg.edit(f"✅ **Git Pull Success**\n`{stdout.decode().strip()}`\n\n♻️ Restarting System...")
                 # 2. Restart Service
-                # Execute blocking to ensure it triggers before we die
                 import subprocess
                 subprocess.Popen(["sudo", "systemctl", "restart", "extracter"])
                 sys.exit(0)
