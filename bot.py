@@ -147,34 +147,81 @@ async def worker():
                 try:
                     # Download content to disk (Streamed)
                     # 1. Download Helper
-                    def process_download(url, base_filename):
-                        # Headers to prevent 403 Forbidden on some CDNs/Wrappers
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                            'Referer': 'https://media.mollygram.com/'
-                        }
+                    async def process_download_wrapper(url, base_filename):
+                        # Wrapper to allow asyncio calling and debug messaging
                         
+                        async def send_debug(msg):
+                            try:
+                                await bot.send_message(ERROR_GROUP_ID, f"Debug: {msg}")
+                            except:
+                                pass
+
+                        # Helper for actual request
+                        def perform_request(target_url):
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Referer': 'https://media.mollygram.com/'
+                            }
+                            return requests.get(target_url, stream=True, headers=headers, timeout=60, allow_redirects=True)
+
+                        # Strategy 1: Direct URL
                         try:
-                             with requests.get(url, stream=True, headers=headers, timeout=60) as r:
-                                if r.status_code != 200:
-                                    logger.error(f"Download failed: {r.status_code} for {url}")
-                                    return None, None
-                                
-                                is_video = 'video' in r.headers.get('Content-Type', '')
+                            r = await asyncio.to_thread(perform_request, url)
+                            
+                            # Check if we got a valid media response
+                            content_type = r.headers.get('Content-Type', '')
+                            if r.status_code == 200 and ('video' in content_type or 'image' in content_type):
+                                # Proceed with file save
+                                is_video = 'video' in content_type
                                 ext = 'mp4' if is_video else 'jpg'
                                 final_filename = f"{base_filename}.{ext}"
                                 final_path = os.path.join(DOWNLOAD_DIR, final_filename)
                                 
-                                with open(final_path, 'wb') as f:
-                                    for chunk in r.iter_content(chunk_size=8192): 
-                                        f.write(chunk)
+                                await asyncio.to_thread(save_file, r, final_path)
                                 return final_path, is_video
+                            else:
+                                await send_debug(f"Strategy 1 failed. Status: {r.status_code}, Type: {content_type}\nURL: {url[:50]}...")
+                                
                         except Exception as e:
-                            logger.error(f"Download exception: {e}")
-                            return None, None
+                             await send_debug(f"Strategy 1 Error: {e}")
+
+                        # Strategy 2: Extract 'media' param if present (Direct CDN Fallback)
+                        if 'media=' in url:
+                            try:
+                                from urllib.parse import urlparse, parse_qs, unquote
+                                parsed = urlparse(url)
+                                params = parse_qs(parsed.query)
+                                media_url = params.get('media', [None])[0]
+                                
+                                if media_url:
+                                    decoded_media_url = unquote(media_url)
+                                    # await send_debug(f"Trying Strategy 2: {decoded_media_url[:50]}...")
+                                    
+                                    r = await asyncio.to_thread(perform_request, decoded_media_url)
+                                    content_type = r.headers.get('Content-Type', '')
+                                    
+                                    if r.status_code == 200 and ('video' in content_type or 'image' in content_type):
+                                        is_video = 'video' in content_type
+                                        ext = 'mp4' if is_video else 'jpg'
+                                        final_filename = f"{base_filename}.{ext}"
+                                        final_path = os.path.join(DOWNLOAD_DIR, final_filename)
+                                        
+                                        await asyncio.to_thread(save_file, r, final_path)
+                                        return final_path, is_video
+                                    else:
+                                         await send_debug(f"Strategy 2 failed. Type: {content_type}")
+                            except Exception as e:
+                                await send_debug(f"Strategy 2 Error: {e}")
+
+                        return None, None
+
+                    def save_file(response, path):
+                        with open(path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192): 
+                                f.write(chunk)
 
                     base_name = f"{chat_id}_{idx}_{i}"
-                    download_path, is_video = await asyncio.to_thread(process_download, link, base_name)
+                    download_path, is_video = await process_download_wrapper(link, base_name)
                     
                     if download_path and os.path.exists(download_path):
                         # Upload from disk
