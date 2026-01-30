@@ -35,80 +35,78 @@ JOB_QUEUE = asyncio.Queue()
 
 def get_instagram_media_links(instagram_url, unique_id):
     """
-    Takes an Instagram post URL, queries media.mollygram.com.
+    Uses Cobalt API (Multi-Instance) to fetch media links.
+    Instances: api.cobalt.tools, co.wuk.sh
     Returns (media_links_list, debug_file_path).
-    debug_file_path is None if successful or no debug info saved.
     """
     
-    base_url = "https://media.mollygram.com/"
-    params = {'url': instagram_url}
+    # List of Cobalt instances to try
+    instances = [
+        "https://api.cobalt.tools/api/json",
+        "https://co.wuk.sh/api/json",
+        "https://api.server.cobalt.tools/api/json" 
+    ]
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    payload = {
+        "url": instagram_url,
+        "filenamePattern": "basic" # Helps avoid long filenames sometimes
     }
 
     debug_file = None
-    
-    try:
-        logger.info(f"Fetching from Mollygram: {instagram_url}")
-        response = requests.get(base_url, params=params, headers=headers, timeout=30)
-        
-        # Save debug response for user inspection
-        if response.status_code != 200 or True: # Always saving for now as requested/implied to debug "error"
-             # But let's only return it if we fail to find links, to avoid spam, 
-             # UNLESS the user specifically asked "links ka url response upload karo".
-             # Let's save it provisionally.
-             timestamp = int(time.time())
-             debug_filename = f"debug_{unique_id}_{timestamp}.html"
-             debug_file = os.path.join(DOWNLOAD_DIR, debug_filename)
-             with open(debug_file, "w", encoding="utf-8") as f:
-                 f.write(f"URL: {response.url}\nStatus: {response.status_code}\n\nBody:\n{response.text}")
+    last_error = None
 
-        if response.status_code != 200:
-            return [], debug_file
-        
+    for base_url in instances:
         try:
-            data = response.json()
-        except Exception:
-            return [], debug_file
-
-        if data.get("status") != "ok":
-            return [], debug_file
-
-        html_content = data.get("html", "")
-        if not html_content:
-            return [], debug_file
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        media_links = []
-        
-        download_buttons = soup.find_all('a', id='download-video')
-        if not download_buttons:
-             download_buttons = soup.find_all('a', class_='bg-gradient-success')
-
-        for btn in download_buttons:
-            href = btn.get('href')
-            if href:
-                import html
-                decoded_href = html.unescape(href)
-                media_links.append(decoded_href)
-
-        if media_links:
-            # If success, we might not want to send the debug file unless requested.
-            # But if the user says "it gives error", maybe we send it only on empty list.
-            if os.path.exists(debug_file):
-                os.remove(debug_file)
-            return media_links, None
+            logger.info(f"Fetching from Cobalt Instance: {base_url} for {instagram_url}")
+            response = requests.post(base_url, json=payload, headers=headers, timeout=20)
             
-        return [], debug_file
-    
-    except Exception as e:
-        logger.error(f"Request failed: {e}")
-        # Create a simple debug file with the error
-        if not debug_file:
-             debug_file = os.path.join(DOWNLOAD_DIR, f"error_{unique_id}.txt")
-             with open(debug_file, "w") as f:
-                 f.write(f"Exception occurred: {e}")
-        return [], debug_file
+            # Save debug response (overwrite per attempt, keep last one)
+            timestamp = int(time.time())
+            debug_filename = f"debug_{unique_id}_{timestamp}.txt"
+            debug_file = os.path.join(DOWNLOAD_DIR, debug_filename)
+            with open(debug_file, "w", encoding="utf-8") as f:
+                 f.write(f"Instance: {base_url}\nURL: {response.url}\nStatus: {response.status_code}\n\nBody:\n{response.text}")
+
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status")
+                
+                media_links = []
+                
+                if status == "stream" or status == "redirect":
+                    media_links.append(data.get("url"))
+                elif status == "picker":
+                    for item in data.get("picker", []):
+                        media_links.append(item.get("url"))
+                
+                if media_links:
+                    # Success
+                    if os.path.exists(debug_file):
+                        os.remove(debug_file)
+                    return media_links, None
+                else:
+                    logger.error(f"Cobalt ({base_url}) returned no links. Status: {status}")
+            else:
+                logger.error(f"Cobalt ({base_url}) failed: {response.status_code}")
+                
+        except Exception as e:
+            logger.error(f"Cobalt ({base_url}) Request failed: {e}")
+            last_error = e
+            # Continue to next instance
+
+    # If all failed
+    if not debug_file:
+         debug_file = os.path.join(DOWNLOAD_DIR, f"error_{unique_id}.txt")
+         with open(debug_file, "w") as f:
+             f.write(f"All Cobalt instances failed. Last error: {last_error}")
+
+    return [], debug_file
 
 async def worker():
     """
