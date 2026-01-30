@@ -86,7 +86,10 @@ def get_instagram_media_links(instagram_url):
         for btn in download_buttons:
             href = btn.get('href')
             if href:
-                media_links.append(href)
+                # Decode HTML entities (e.g., &amp; -> &)
+                import html
+                decoded_href = html.unescape(href)
+                media_links.append(decoded_href)
 
         return media_links
     
