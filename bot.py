@@ -234,6 +234,9 @@ if __name__ == '__main__':
             else:
                 logger.warning("⚠️ User Client NOT Logged In. Send /login to Controller Bot.")
         except Exception as e:
+            if "database is locked" in str(e):
+                logger.critical("❌ FATAL ERROR: Database is locked! This means another instance of the bot is already running.")
+                logger.critical("➡️ RUN: 'sudo systemctl stop extracter' AND 'pkill -f python3' to fix this.")
             logger.error(f"❌ User Client Connection Failed: {e}")
 
     # Run init before starting polling
