@@ -196,23 +196,18 @@ async def process_queue(notify_chat_id):
                 
                 # --- Waiting Logic ---
                 final_response = None
-                media_list = [] # Store all media found
+                media_list = [] 
                 
                 start_time = asyncio.get_event_loop().time()
                 while (asyncio.get_event_loop().time() - start_time) < 45:
                     try:
-                        # Wait for next message
                         response = await conv.get_response()
                     except asyncio.TimeoutError:
                         break
                     
-                    # 1. Capture Media (Primary Goal)
+                    # 1. Capture Media 
                     if response.media:
                         media_list.append(response.media)
-                        # If we found media, we don't break immediately anymore.
-                        # We wait a bit to see if MORE media comes (Carousel/Album).
-                        # But we can assume if we get media, we are on the right track.
-                        # We switch to a "Harvest Mode" with short timeout.
                         continue
 
                     text_lower = response.text.lower() if response.text else ""
@@ -229,58 +224,57 @@ async def process_queue(notify_chat_id):
                             break
                     
                     if is_error:
-                        # If we already have media (rare), maybe this is a partial error? 
-                        # But usually error is standalone.
                         if not media_list:
-                            final_response = response # Mark as error
+                            final_response = response 
                         break 
                         
                 # --- Harvest Mode for Albums ---
-                # If we have at least 1 media, try to fetch neighbors quickly
                 if media_list:
-                    # Try to get more messages quickly in case it's a stream of photos
                     try:
                         while True:
-                            # Very short timeout to catch rapid-fire photos
                             extra = await conv.get_response(timeout=2)
                             if extra.media:
                                 media_list.append(extra.media)
                             else:
                                 break
                     except asyncio.TimeoutError:
-                        pass # Done harvesting
+                        pass 
 
                 # --- Decision Logic ---
                 if media_list:
-                    # ✅ Success: Send ALL media
+                    # ✅ Success: Send ALL media via BOT
                     try:
-                        # Send the first one with caption
-                        await user.send_file(GROUP_MEDIA, media_list[0], caption=f"{url}")
-                        
-                        # Send the rest without caption
-                        for m in media_list[1:]:
-                            await user.send_file(GROUP_MEDIA, m)
+                        for m in media_list:
+                            # 1. Download to local (User Client)
+                            path = await user.download_media(m)
                             
-                        # Silent success (Log only)
+                            # 2. Upload to Group (Controller Bot)
+                            # Caption ON for ALL items
+                            await bot.send_file(GROUP_MEDIA, path, caption=f"{url}")
+                            
+                            # 3. Cleanup
+                            os.remove(path)
+                            
                         logger.info(f"✅ Saved {len(media_list)} items for: {url}")
                         
                     except Exception as e:
-                        logger.error(f"Copy Error: {e}")
+                        logger.error(f"Copy/Upload Error: {e}")
                 
                 elif final_response:
                     # ❌ Known Error found
-                    # Send to Fallback
+                    # 1. Send to Fallback (Must be User -> Bot)
                     await user.send_message(TARGET_FALLBACK, url)
-                    # Log to Error Group
-                    await user.send_message(GROUP_ERROR, f"Error\n{url}")
-                    # Silent failure logic
+                    
+                    # 2. Log to Error Group (Must be BOT)
+                    # Link Preview OFF
+                    await bot.send_message(GROUP_ERROR, f"Error\n{url}", link_preview=False)
+                    
                     logger.warning(f"Error -> Fallback: {url}")
                 
                 else:
-                    # ❌ Timeout / No Media / No Known Error
-                    # Treat as Error -> Fallback
+                    # ❌ Timeout / Unknown
                     await user.send_message(TARGET_FALLBACK, url)
-                    await user.send_message(GROUP_ERROR, f"Error (Timeout/Unknown)\n{url}")
+                    await bot.send_message(GROUP_ERROR, f"Error (Timeout/Unknown)\n{url}", link_preview=False)
                     logger.warning(f"Timeout/Unknown -> Fallback: {url}")
 
             await asyncio.sleep(5)
@@ -288,8 +282,6 @@ async def process_queue(notify_chat_id):
         except Exception as e:
             logger.error(f"Logic Error: {e}")
             
-    # await bot.send_message(notify_chat_id, "✅ Batch Done!") # Optional: Keep "Done" or remove? User wants silence. 
-    # Let's keep "Batch Done" just so he knows when to send more.
     await bot.send_message(notify_chat_id, "✅ Batch Done!") 
     IS_PROCESSING = False
 
