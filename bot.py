@@ -33,80 +33,55 @@ if not os.path.exists(DOWNLOAD_DIR):
 # Item format: (chat_id, url_string, index_in_batch, total_in_batch)
 JOB_QUEUE = asyncio.Queue()
 
+import yt_dlp
+
 def get_instagram_media_links(instagram_url, unique_id):
     """
-    Uses Cobalt API (Multi-Instance) to fetch media links.
-    Instances: api.cobalt.tools, co.wuk.sh
+    Uses yt-dlp to extract media links.
     Returns (media_links_list, debug_file_path).
     """
+    media_links = []
+    debug_file_path = None
     
-    # List of Cobalt instances to try
-    instances = [
-        "https://api.cobalt.tools/api/json",
-        "https://co.wuk.sh/api/json",
-        "https://api.server.cobalt.tools/api/json" 
-    ]
-    
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    payload = {
-        "url": instagram_url,
-        "filenamePattern": "basic" # Helps avoid long filenames sometimes
+    # Configure yt-dlp
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'format': 'best', # Get best quality
+        'extract_flat': False, # We need deep extraction
+        # 'cookiefile': 'cookies.txt', # Should be added if user has cookies
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
 
-    debug_file = None
-    last_error = None
-
-    for base_url in instances:
-        try:
-            logger.info(f"Fetching from Cobalt Instance: {base_url} for {instagram_url}")
-            response = requests.post(base_url, json=payload, headers=headers, timeout=20)
+    try:
+        logger.info(f"Extracting with yt-dlp: {instagram_url}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(instagram_url, download=False)
             
-            # Save debug response (overwrite per attempt, keep last one)
-            timestamp = int(time.time())
-            debug_filename = f"debug_{unique_id}_{timestamp}.txt"
-            debug_file = os.path.join(DOWNLOAD_DIR, debug_filename)
-            with open(debug_file, "w", encoding="utf-8") as f:
-                 f.write(f"Instance: {base_url}\nURL: {response.url}\nStatus: {response.status_code}\n\nBody:\n{response.text}")
-
-            if response.status_code == 200:
-                data = response.json()
-                status = data.get("status")
-                
-                media_links = []
-                
-                if status == "stream" or status == "redirect":
-                    media_links.append(data.get("url"))
-                elif status == "picker":
-                    for item in data.get("picker", []):
-                        media_links.append(item.get("url"))
-                
-                if media_links:
-                    # Success
-                    if os.path.exists(debug_file):
-                        os.remove(debug_file)
-                    return media_links, None
-                else:
-                    logger.error(f"Cobalt ({base_url}) returned no links. Status: {status}")
+            if 'entries' in info:
+                # It's a playlist or carousel
+                for entry in info['entries']:
+                    url = entry.get('url')
+                    if url:
+                        media_links.append(url)
             else:
-                logger.error(f"Cobalt ({base_url}) failed: {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Cobalt ({base_url}) Request failed: {e}")
-            last_error = e
-            # Continue to next instance
+                # Single video/image
+                url = info.get('url')
+                if url:
+                    media_links.append(url)
+                    
+        return media_links, None
 
-    # If all failed
-    if not debug_file:
-         debug_file = os.path.join(DOWNLOAD_DIR, f"error_{unique_id}.txt")
-         with open(debug_file, "w") as f:
-             f.write(f"All Cobalt instances failed. Last error: {last_error}")
-
-    return [], debug_file
+    except Exception as e:
+        logger.error(f"yt-dlp failed: {e}")
+        # Save error to debug file
+        timestamp = int(time.time())
+        debug_filename = f"error_ytdlp_{unique_id}_{timestamp}.txt"
+        debug_file_path = os.path.join(DOWNLOAD_DIR, debug_filename)
+        with open(debug_file_path, "w") as f:
+            f.write(str(e))
+            
+        return [], debug_file_path
 
 async def worker():
     """
