@@ -39,13 +39,27 @@ try:
     import yt_dlp
     import requests
     from bs4 import BeautifulSoup
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.chrome.service import Service
 except ImportError:
     import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "instaloader", "yt-dlp", "requests", "beautifulsoup4"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "instaloader", "yt-dlp", "requests", "beautifulsoup4", "selenium", "webdriver-manager"])
     import instaloader
     import yt_dlp
     import requests
     from bs4 import BeautifulSoup
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.chrome.service import Service
 
 # Global Instaloader Instance
 L = instaloader.Instaloader(
@@ -63,7 +77,7 @@ def get_instagram_media_links(instagram_url, unique_id):
     Hybrid Extractor:
     1. Instaloader (Python Native) - Best for Images/Carousels
     2. yt-dlp (Video Engine) - Best for Reels/Videos
-    3. Mollygram (Web API) - Fallback
+    3. Selenium Browser (Real User Simulation) - Fallback
     Returns (media_links_list, debug_file_path).
     """
     media_links = []
@@ -102,7 +116,6 @@ def get_instagram_media_links(instagram_url, unique_id):
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
-            # 'cookiefile': 'cookies.txt' # Recommended if available
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(instagram_url, download=False)
@@ -119,43 +132,61 @@ def get_instagram_media_links(instagram_url, unique_id):
     except Exception as e:
          logger.error(f"yt-dlp failed: {e}")
 
-    # --- Strategy 3: Mollygram (fallback) ---
+    # --- Strategy 3: Selenium Browser (Last Resort) ---
     try:
-        logger.info(f"Strategy 3 (Mollygram): {instagram_url}")
-        base_url = "https://media.mollygram.com/"
-        params = {'url': instagram_url}
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://mollygram.com/',
-             'Accept': 'application/json'
-        }
-        response = requests.get(base_url, params=params, headers=headers, timeout=30)
+        logger.info(f"Strategy 3 (Selenium): {instagram_url}")
         
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "ok":
-                html_content = data.get("html", "")
-                soup = BeautifulSoup(html_content, 'html.parser')
-                download_buttons = soup.find_all('a', id='download-video')
-                if not download_buttons:
-                    download_buttons = soup.find_all('a', class_='bg-gradient-success')
-                for btn in download_buttons:
-                    href = btn.get('href')
-                    if href:
-                        import html
-                        media_links.append(html.unescape(href))
-                        
+        chrome_options = Options()
+        chrome_options.add_argument("--headless") # Run in background
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        
+        # Setup Driver
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        try:
+            driver.get(instagram_url)
+            # Wait for content to load
+            time.sleep(5) 
+            
+            # Try to find video tag
+            videos = driver.find_elements(By.TAG_NAME, "video")
+            for video in videos:
+                src = video.get_attribute("src")
+                if src: media_links.append(src)
+            
+            # Try to find image tag (if no video)
+            if not media_links:
+                images = driver.find_elements(By.TAG_NAME, "img")
+                # Filter for main post image usually has strict sizes or classes, 
+                # but simple approach: get largest image or specific class if known.
+                # Inspecting 'src' often yields thumbnails, but let's try broadly.
+                for img in images:
+                    src = img.get_attribute("src")
+                    # Basic filter to avoid tiny icons/avatars
+                    if src and "150x150" not in src and "s150x150" not in src:
+                         pass 
+                         # Image logic is tricky without login due to overlays. 
+                         # Focusing on VIDEO support which is main pain point.
+            
+            # Specific check for 'poster' in video tag sometimes holds high res image
+                
+        finally:
+            driver.quit()
+            
         if media_links:
             return media_links, None
-            
+
     except Exception as e:
-        logger.error(f"Mollygram failed: {e}")
+        logger.error(f"Selenium failed: {e}")
 
     # If all failed
     timestamp = int(time.time())
     debug_path = os.path.join(DOWNLOAD_DIR, f"error_final_{unique_id}_{timestamp}.txt")
     with open(debug_path, "w") as f:
-        f.write("All strategies failed.")
+        f.write("All strategies failed (Instaloader, yt-dlp, Selenium).")
     return [], debug_path
 
 async def worker():
