@@ -1,4 +1,5 @@
 telethon
 requests
 beautifulsoup4
-
+aiohttp
+aiofiles
