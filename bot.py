@@ -30,8 +30,8 @@ GROUP_ERROR = -1003650307144
 # Valid headers for requests mostly for download if needed, though instaloader handles its own metadata
 # API_URL = "https://princeapps.com/insta.php" # Removed
 
-# Initialize Instaloader
-L = instaloader.Instaloader()
+# Initialize Instaloader with User Agent to mimic legitimate browser
+L = instaloader.Instaloader(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 # Optional: Configure to not download compressed images, etc.
 # L.download_pictures = False
 # L.download_videos = False 
@@ -91,36 +91,37 @@ def fetch_media_task(url):
         # Supports /p/, /reel/, /tv/
         shortcode_match = re.search(r'(?:/p/|/reel/|/tv/)([a-zA-Z0-9_-]+)', url)
         if not shortcode_match:
-             # Try to see if it is a raw shortcode? usually typical URLs are handled.
-             # fallback for stories not supported in public-no-login usually
              return {'error': "Invalid URL format or could not extract shortcode"}
         
         shortcode = shortcode_match.group(1)
         
         # Fetch Post Metadata
-        # Context note: accessing L.context from thread is generally safe for read-only if initialized before
         post = instaloader.Post.from_shortcode(L.context, shortcode)
         
-        media_list = []
+        media_items = []
         
         # Check if Sidecar (Album/Carousel)
         if post.typename == 'GraphSidecar':
             for node in post.get_sidecar_nodes():
                 if node.is_video:
-                    media_list.append(node.video_url)
+                    if node.video_url:
+                        media_items.append({'url': node.video_url, 'is_video': True})
                 else:
-                    media_list.append(node.display_url)
+                    media_items.append({'url': node.display_url, 'is_video': False})
+        
         # Check if Video
         elif post.is_video:
-            media_list.append(post.video_url)
+            if post.video_url:
+                media_items.append({'url': post.video_url, 'is_video': True})
+        
         # Image
         else:
-            media_list.append(post.url)
+            media_items.append({'url': post.url, 'is_video': False})
             
-        if not media_list:
+        if not media_items:
              return {'error': "No media found in post"}
              
-        return {'media': media_list}
+        return {'media': media_items}
 
     except instaloader.LoginRequiredException:
         return {'error': "Private Account (Login Required) or Rate Limited"}
@@ -129,18 +130,19 @@ def fetch_media_task(url):
     except Exception as e:
         return {'error': str(e)}
 
-def download_media_task(media_url):
+def download_media_task(media_url, is_video=False):
     """Synchronous function to download media to temp file."""
     try:
-        ext = 'jpg'
-        if '.mp4' in media_url:
-            ext = 'mp4'
-        elif '.png' in media_url:
-            ext = 'png'
+        # Determine extension based on type, fail-safe
+        ext = 'mp4' if is_video else 'jpg'
             
         filename = f"temp_{int(time.time() * 1000000)}.{ext}"
         
-        with requests.get(media_url, stream=True, timeout=60) as r:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        with requests.get(media_url, stream=True, timeout=60, headers=headers) as r:
             r.raise_for_status()
             with open(filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
@@ -171,18 +173,18 @@ async def process_queue():
             result = await loop.run_in_executor(executor, fetch_media_task, url)
             
             if 'media' in result:
-                media_list = result['media']
+                media_items = result['media']
                 # 2. Process Media
-                for media_link in media_list:
+                for item in media_items:
+                    media_link = item['url']
+                    is_video = item['is_video']
+                    
                     # Download (Run in Thread)
-                    file_path = await loop.run_in_executor(executor, download_media_task, media_link)
+                    file_path = await loop.run_in_executor(executor, download_media_task, media_link, is_video)
                     
                     if file_path:
                         try:
                             # Upload (Telethon send_file is async)
-                            # Identify video for supports_streaming
-                            is_video = file_path.endswith('.mp4')
-                            
                             await bot.send_file(
                                 GROUP_MEDIA,
                                 file_path,
