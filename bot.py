@@ -7,7 +7,9 @@ import time
 import sys
 import random
 import subprocess
+import subprocess
 import json
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from telethon import TelegramClient, events
 
@@ -94,15 +96,24 @@ def fetch_media_task(url):
     """Fetch media using PrinceApps API."""
     try:
         api_url = "https://princeapps.com/insta.php"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
-        }
-        
         # 1. Call API
-        # Manual construction to avoid Requests lib encoding '?' or '=' characters in the passed URL parameter
-        # User requested "Same to same raw url ke sath request karo"
-        final_api_url = f"https://princeapps.com/insta.php?url={url}"
+        # Encode URL for query parameter (Browser behavior)
+        encoded_url = urllib.parse.quote(url)
+        final_api_url = f"https://princeapps.com/insta.php?url={encoded_url}"
         
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1'
+        }
+
         try:
             r = requests.get(final_api_url, headers=headers, timeout=30)
             raw_response = r.text
