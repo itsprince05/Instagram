@@ -108,61 +108,95 @@ def fetch_media_task(url):
         
         # Helper to process yt-dlp entry dict
         def process_entry(entry):
-            # Check for specific sidecar entry type or determine by codecs
+            # Default to Image unless proven Video
             is_video = False
             
-            # 1. Determine Type
-            # If vcodec is present and not none, it's likely video.
-            # However, allow explicit check for known image extensions.
-            if entry.get('vcodec') != 'none' and entry.get('vcodec') is not None:
-                is_video = True
+            vcodec = entry.get('vcodec')
+            acodec = entry.get('acodec')
+            ext = entry.get('ext', '')
             
-            if entry.get('ext') in ['jpg', 'png', 'webp', 'heic']:
+            # 1. Determine Type
+            if vcodec and vcodec != 'none':
+                is_video = True
+            if ext in ['mp4', 'webm', 'mov']:
+                is_video = True
+            if ext in ['jpg', 'png', 'webp', 'heic', 'jpeg']:
                 is_video = False
             
             final_url = None
             
-            # 2. Extract URL based on Type
+            # 2. Extract URL
             if is_video:
-                # Video: Prioritize formats with Audio (acodec != none) to avoid silent GIFs
+                # Video Path (Prioritize Audio)
                 formats = entry.get('formats', [])
                 if formats:
-                    # Filter for formats with both video and audio
-                    # Sort by resolution/quality if possible, usually last is best
-                    best_audio_video = [
+                    # Look for audio+video
+                    candidates = [
                         f for f in formats 
                         if f.get('vcodec') != 'none' 
                         and f.get('acodec') != 'none'
-                        and f.get('protocol') in ['https', 'http'] # Avoid m3u8 if possible for direct download
+                        and f.get('protocol') in ['https', 'http']
                     ]
+                    if candidates:
+                        final_url = candidates[-1].get('url')
                     
-                    if best_audio_video:
-                        final_url = best_audio_video[-1].get('url') # Best quality with audio
-                        
-                    # Fallback: Just best format found (yt-dlp default)
                     if not final_url:
-                        final_url = formats[-1].get('url')
+                        # Fallback to whatever video format
+                        vid_candidates = [
+                             f for f in formats 
+                             if f.get('vcodec') != 'none'
+                        ]
+                        if vid_candidates:
+                             final_url = vid_candidates[-1].get('url')
 
-                # Fallback to direct URL if no formats parsed
                 if not final_url:
                     final_url = entry.get('url')
 
-                # Check Audio for Side Channel Message
-                if entry.get('acodec') == 'none':
-                     # Double check if we picked a url with audio? 
-                     pass # We handled selection above.
-
             else:
-                # Image
-                final_url = entry.get('url')
-                if not final_url:
-                    # Often in thumbnails for IG
-                    thumbnails = entry.get('thumbnails', [])
-                    if thumbnails:
-                        final_url = thumbnails[-1].get('url')
+                # Image Path (Aggressive Search)
+                candidates = []
+                
+                # Direct URL
+                if entry.get('url'):
+                    candidates.append({
+                        'url': entry['url'],
+                        'width': entry.get('width', 0),
+                        'height': entry.get('height', 0)
+                    })
+                
+                # Check Formats (yt-dlp puts high-res images here sometimes)
+                for f in entry.get('formats', []):
+                    if f.get('vcodec') == 'none' or f.get('ext') in ['jpg', 'png', 'webp']:
+                        candidates.append({
+                            'url': f['url'],
+                            'width': f.get('width', 0),
+                            'height': f.get('height', 0)
+                        })
+
+                # Check Thumbnails (Common fallback)
+                for t in entry.get('thumbnails', []):
+                    candidates.append({
+                         'url': t['url'],
+                         'width': t.get('width', 0),
+                         'height': t.get('height', 0)
+                    })
+                
+                # Sort by resolution (Width) to get best image
+                if candidates:
+                    # Filter invalid URLs just in case
+                    candidates = [c for c in candidates if c['url'] and c['url'].startswith('http')]
+                    candidates.sort(key=lambda x: (x.get('width') or 0), reverse=True)
+                    if candidates:
+                        final_url = candidates[0]['url']
             
             if final_url:
                 media_items.append({'url': final_url, 'is_video': is_video})
+                
+                # Check for "No Audio" on confirmed videos
+                if is_video and str(acodec) == 'none':
+                     # Only flag if we actually extracted a video that is silent
+                     # checking final_url against entry isn't perfect but sufficient heuristic
+                     pass # Skipped detailed check to strictly follow user request of "just send it" or handling upstream logic
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
