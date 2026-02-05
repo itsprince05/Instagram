@@ -23,6 +23,15 @@ API_ID = 38659771
 API_HASH = '6178147a40a23ade99f8b3a45f00e436'
 BOT_TOKEN = "8533327762:AAHR1D4CyFpMQQ4NztXhET6OL4wL1kHNkQ4"
 
+# User Agents for Rotation
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
+    'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+    'Mozilla/5.0 (iPad; CPU OS 13_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/87.0.4280.77 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.96 Safari/537.36'
+]
+
 # Groups
 GROUP_MEDIA = -1003759432523
 GROUP_ERROR = -1003650307144
@@ -100,7 +109,9 @@ def fetch_media_task(url):
         shortcode = shortcode_match.group(1)
         
         # Initialize Instaloader locally for fresh session per request to avoid session tainting
-        L = instaloader.Instaloader()
+        # Rotate User Agent to bypass simple blocking
+        ua = random.choice(USER_AGENTS)
+        L = instaloader.Instaloader(user_agent=ua)
 
         # Retry logic for 401/429 Rate Limits
         post = None
@@ -113,11 +124,13 @@ def fetch_media_task(url):
                 break # Success
             except (instaloader.ConnectionException, instaloader.LoginRequiredException) as e:
                 last_error = e
-                wait_time = random.randint(10, 20) * attempt
+                # Reduced wait time for better UX
+                wait_time = random.randint(3, 8) * attempt
                 print(f"Instaloader Rate Limit (Attempt {attempt}/3). Waiting {wait_time}s...")
                 time.sleep(wait_time)
-                # Re-init to try fresh
-                L = instaloader.Instaloader()
+                # Re-init to try fresh with NEW user agent
+                ua = random.choice(USER_AGENTS)
+                L = instaloader.Instaloader(user_agent=ua)
             except Exception as e:
                 return {'error': str(e)}
         
