@@ -70,15 +70,15 @@ async def update_status_message():
     try:
         text = (
             "Bulk Processing Status\n\n"
-            f"Total Tasks: {STATS['total']}\n"
-            f"Completed: {STATS['completed']}\n"
-            f"Failed: {STATS['failed']}\n"
-            f"Remaining: {STATS['remaining']}\n\n"
+            f"Total Tasks - {STATS['total']}\n"
+            f"Completed - {STATS['completed']}\n"
+            f"Failed - {STATS['failed']}\n"
+            f"Remaining - {STATS['remaining']}\n\n"
             "Processing..."
         )
         
         if STATS['remaining'] == 0 and STATS['total'] > 0:
-            text += "\n\nAll tasks completed!"
+            text += "\n\nAll tasks completed..."
 
         await STATS['status_msg'].edit(text)
     except Exception as e:
@@ -304,7 +304,7 @@ async def process_queue():
             try:
                 await bot.send_message(
                     GROUP_ERROR, 
-                    f"Error: {e}\n{url}", 
+                    f"Error\n{url}", 
                     link_preview=False
                 )
             except:
