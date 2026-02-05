@@ -345,6 +345,27 @@ async def login_handler(event):
     LOGIN_DATA[event.chat_id] = {}
     await event.respond("Instagram Login\n\nPlease enter your Username:")
 
+@bot.on(events.NewMessage(pattern='/logout'))
+async def logout_handler(event):
+    if not event.is_private:
+        return
+    
+    # Clear session files
+    count = 0
+    try:
+        for f in os.listdir('.'):
+            if f.startswith('session-'):
+                os.remove(f)
+                count += 1
+    except Exception as e:
+        logger.error(f"Logout cleanup error: {e}")
+        
+    # Reset Global L
+    global L
+    L = instaloader.Instaloader()
+    
+    await event.respond(f"Logged out. Session cleared.")
+
 @bot.on(events.NewMessage)
 async def message_handler(event):
     if not event.is_private:
@@ -393,10 +414,12 @@ async def message_handler(event):
                 del LOGIN_DATA[chat_id]
                 await msg.edit(
                     "Checkpoint Required\n\n"
-                    "1. Open Instagram App on your phone.\n"
-                    "2. Check for a 'Login Attempt' notification.\n"
-                    "3. Tap 'This was me'.\n"
-                    "4. Then type /login again."
+                    "Instagram blocked the login because this device is new.\n\n"
+                    "SOLUTION:\n"
+                    "1. Log in to this account on a phone or browser NOW.\n"
+                    "2. You will see a challenge (Captcha/Verify).\n"
+                    "3. Solve it there.\n"
+                    "4. Once logged in there, come back and type /login again."
                 )
 
             else:
