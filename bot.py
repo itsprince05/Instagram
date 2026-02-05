@@ -10,7 +10,7 @@ import subprocess
 import json
 from concurrent.futures import ThreadPoolExecutor
 from telethon import TelegramClient, events
-import yt_dlp
+
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -90,154 +90,78 @@ async def update_status_message():
 
 
 def fetch_media_task(url):
-    """Fetch media using Authenticated yt-dlp."""
+    """Fetch media using Direct Instagram GraphQL/JSON API."""
     try:
-        # Configure yt-dlp (Anonymous)
-        ydl_opts = {
-            'quiet': True, 
-            'no_warnings': True,
-            'extract_flat': False,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'http_headers': {'Accept-Language': 'en-US,en;q=0.9'},
-            'noplaylist': False, # Allow parsing sidecars
-            'ignore_no_formats_error': True, # Vital for Image posts
-        }
-
-        media_items = []
-        side_channel_msgs = []
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 243.1.0.14.111',
+            'Accept': '*/*'
+        })
         
-        # Helper to process yt-dlp entry dict
-        def process_entry(entry):
-            # Default to Image unless proven Video
-            is_video = False
+        # Clean URL
+        clean_link = url.split('?')[0]
+        # Append parameters for JSON
+        api_url = f"{clean_link}?__a=1&__d=dis"
+        
+        response = session.get(api_url, timeout=10)
+        
+        if response.status_code != 200:
+             if response.status_code == 401:
+                 return {'error': "HTTP 401 - Login Required (Server Blocked)"}
+             return {'error': f"HTTP {response.status_code}"}
+             
+        try:
+            data = response.json()
+        except:
+            return {'error': "Invalid JSON Response"}
             
-            vcodec = entry.get('vcodec')
-            acodec = entry.get('acodec')
-            ext = entry.get('ext', '')
+        items = []
+        
+        # Locate the media node
+        # Structure varies: sometimes ['items'][0], sometimes ['graphql']['shortcode_media']
+        node = None
+        if 'items' in data and len(data['items']) > 0:
+            node = data['items'][0]
+        elif 'graphql' in data and 'shortcode_media' in data['graphql']:
+            node = data['graphql']['shortcode_media']
             
-            # 1. Determine Type
-            if vcodec and vcodec != 'none':
-                is_video = True
-            if ext in ['mp4', 'webm', 'mov']:
-                is_video = True
-            if ext in ['jpg', 'png', 'webp', 'heic', 'jpeg']:
-                is_video = False
+        if not node:
+            return {'error': "No Media Node Found"}
             
-            final_url = None
+        media_list = []
+        msgs = []
+        
+        # Helper to process a single node
+        def process_node(n):
+            # Check for Video
+            if 'video_versions' in n:
+                # Get best quality video
+                videos = sorted(n['video_versions'], key=lambda x: x['width']*x['height'], reverse=True)
+                if videos:
+                    media_list.append({'url': videos[0]['url'], 'is_video': True})
+            elif 'image_versions2' in n:
+                # Get best quality image
+                images = sorted(n['image_versions2']['candidates'], key=lambda x: x['width']*x['height'], reverse=True)
+                if images:
+                    media_list.append({'url': images[0]['url'], 'is_video': False})
             
-            # 2. Extract URL
-            if is_video:
-                # Video Path (Prioritize Audio)
-                formats = entry.get('formats', [])
-                if formats:
-                    # Look for audio+video
-                    candidates = [
-                        f for f in formats 
-                        if f.get('vcodec') != 'none' 
-                        and f.get('acodec') != 'none'
-                        and f.get('protocol') in ['https', 'http']
-                    ]
-                    if candidates:
-                        final_url = candidates[-1].get('url')
-                    
-                    if not final_url:
-                        # Fallback to whatever video format
-                        vid_candidates = [
-                             f for f in formats 
-                             if f.get('vcodec') != 'none'
-                        ]
-                        if vid_candidates:
-                             final_url = vid_candidates[-1].get('url')
+            # Check Audio flag if available (usually has_audio)
+            if n.get('has_audio') is False and n.get('video_versions'):
+                msgs.append(f"Error - No Audio\n{url}")
 
-                if not final_url:
-                    final_url = entry.get('url')
-
-            else:
-                # Image Path (Aggressive Search)
-                candidates = []
-                
-                # Direct URL
-                if entry.get('url'):
-                    candidates.append({
-                        'url': entry['url'],
-                        'width': entry.get('width', 0),
-                        'height': entry.get('height', 0)
-                    })
-                
-                # Check Formats (yt-dlp puts high-res images here sometimes)
-                for f in entry.get('formats', []):
-                    if f.get('vcodec') == 'none' or f.get('ext') in ['jpg', 'png', 'webp']:
-                        candidates.append({
-                            'url': f['url'],
-                            'width': f.get('width', 0),
-                            'height': f.get('height', 0)
-                        })
-
-                # Check Thumbnails (Common fallback)
-                for t in entry.get('thumbnails', []):
-                    candidates.append({
-                         'url': t['url'],
-                         'width': t.get('width', 0),
-                         'height': t.get('height', 0)
-                    })
-                
-                # Sort by resolution (Width) to get best image
-                if candidates:
-                    # Filter invalid URLs just in case
-                    candidates = [c for c in candidates if c['url'] and c['url'].startswith('http')]
-                    candidates.sort(key=lambda x: (x.get('width') or 0), reverse=True)
-                    if candidates:
-                        final_url = candidates[0]['url']
-            
-            if final_url:
-                media_items.append({'url': final_url, 'is_video': is_video})
-                
-                # Check for "No Audio" on confirmed videos
-                if is_video and str(acodec) == 'none':
-                     # Only flag if we actually extracted a video that is silent
-                     # checking final_url against entry isn't perfect but sufficient heuristic
-                     pass # Skipped detailed check to strictly follow user request of "just send it" or handling upstream logic
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            try:
-                info = ydl.extract_info(url, download=False)
-                
-                # DEBUG: Dump the info to analyze structure
-                try:
-                    with open('debug_dump.json', 'w', encoding='utf-8') as f:
-                        json.dump(info, f, default=str, indent=4)
-                except:
-                    pass
-
-            except yt_dlp.utils.DownloadError as e:
-                err_str = str(e).lower()
-                if 'login required' in err_str or 'sign in' in err_str or '401' in err_str:
-                     if os.path.exists('cookies.txt'):
-                         return {'error': "Cookies Expired. Please upload new cookies.txt"}
-                     return {'error': "Login Required (Use /login)"}
-                if 'checkpoint' in err_str or 'challenge' in err_str:
-                     return {'error': "Checkpoint Required (Open App & Approve)"}
-                if '404' in err_str or 'unavailable' in err_str:
-                     return {'error': "Invalid"}
-                return {'error': str(e)}
-            except Exception as e:
-                return {'error': f"Extraction Error: {e}"}
-
-        # Check for Sidecar (Playlist)
-        if 'entries' in info:
-             side_channel_msgs.append(f"Multiple Sidecar\n{url}")
-             for entry in info['entries']:
-                 process_entry(entry)
+        # Check for Sidecar
+        if 'carousel_media' in node:
+            msgs.append(f"Multiple Sidecar\n{url}")
+            for child in node['carousel_media']:
+                process_node(child)
         else:
-             process_entry(info)
-        
-        if not media_items:
-             return {'error': "Invalid"} 
-             
-        # Dedup messages
-        side_channel_msgs = list(set(side_channel_msgs))
-             
-        return {'media': media_items, 'msgs': side_channel_msgs}
+            process_node(node)
+            
+        if not media_list:
+             return {'error': "Invalid / No Media Found"}
+
+        msgs = list(set(msgs))
+        return {'media': media_list, 'msgs': msgs}
 
     except Exception as e:
         return {'error': f"Exception: {str(e)}"}
@@ -356,8 +280,9 @@ async def process_queue():
                 os.remove('debug_dump.json')
         
         STATS['remaining'] = QUEUE.qsize()
+        STATS['remaining'] = QUEUE.qsize()
         await update_status_message()
-        await asyncio.sleep(1)
+        await asyncio.sleep(5) # 5 Second Delay (User Request)
             
     IS_PROCESSING = False
     await update_status_message()
