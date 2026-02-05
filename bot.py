@@ -8,6 +8,7 @@ import sys
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from telethon import TelegramClient, events
+import instaloader
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -25,8 +26,17 @@ BOT_TOKEN = "8533327762:AAHR1D4CyFpMQQ4NztXhET6OL4wL1kHNkQ4"
 GROUP_MEDIA = -1003759432523
 GROUP_ERROR = -1003650307144
 
-# API
-API_URL = "https://princeapps.com/insta.php"
+
+# Valid headers for requests mostly for download if needed, though instaloader handles its own metadata
+# API_URL = "https://princeapps.com/insta.php" # Removed
+
+# Initialize Instaloader
+L = instaloader.Instaloader()
+# Optional: Configure to not download compressed images, etc.
+# L.download_pictures = False
+# L.download_videos = False 
+# We only use it to get metadata URLs.
+
 
 # --- Client Initialization ---
 bot = TelegramClient('controller_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -75,27 +85,47 @@ async def update_status_message():
         logger.error(f"Failed to update status message: {e}")
 
 def fetch_media_task(url):
-    """Synchronous function to fetch media links."""
+    """Synchronous function to fetch media links using Instaloader."""
     try:
-        # 1. Fetch from API
-        params = {'url': url}
-        resp = requests.get(API_URL, params=params, timeout=30)
+        # Extract shortcode
+        # Supports /p/, /reel/, /tv/
+        shortcode_match = re.search(r'(?:/p/|/reel/|/tv/)([a-zA-Z0-9_-]+)', url)
+        if not shortcode_match:
+             # Try to see if it is a raw shortcode? usually typical URLs are handled.
+             # fallback for stories not supported in public-no-login usually
+             return {'error': "Invalid URL format or could not extract shortcode"}
         
-        if resp.status_code != 200:
-            return {'error': f"HTTP {resp.status_code}"}
-            
-        try:
-            data = resp.json()
-        except:
-             return {'error': "Invalid JSON"}
-             
-        if isinstance(data, list) and data:
-            return {'media': data}
-        elif isinstance(data, dict):
-            return {'error': data.get('error', 'Unknown Error')}
+        shortcode = shortcode_match.group(1)
+        
+        # Fetch Post Metadata
+        # Context note: accessing L.context from thread is generally safe for read-only if initialized before
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        media_list = []
+        
+        # Check if Sidecar (Album/Carousel)
+        if post.typename == 'GraphSidecar':
+            for node in post.get_sidecar_nodes():
+                if node.is_video:
+                    media_list.append(node.video_url)
+                else:
+                    media_list.append(node.display_url)
+        # Check if Video
+        elif post.is_video:
+            media_list.append(post.video_url)
+        # Image
         else:
-            return {'error': "Empty response"}
+            media_list.append(post.url)
             
+        if not media_list:
+             return {'error': "No media found in post"}
+             
+        return {'media': media_list}
+
+    except instaloader.LoginRequiredException:
+        return {'error': "Private Account (Login Required) or Rate Limited"}
+    except instaloader.QueryReturnedNotFoundException:
+        return {'error': "Post Not Found"}
     except Exception as e:
         return {'error': str(e)}
 
