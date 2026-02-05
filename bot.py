@@ -99,9 +99,12 @@ def fetch_media_task(url):
         }
         
         # 1. Call API
-        # verify=False because sometimes these custom APIs exhibit SSL issues, though not strictly required if valid
+        # Manual construction to avoid Requests lib encoding '?' or '=' characters in the passed URL parameter
+        # User requested "Same to same raw url ke sath request karo"
+        final_api_url = f"https://princeapps.com/insta.php?url={url}"
+        
         try:
-            r = requests.get(api_url, params={'url': url}, headers=headers, timeout=30)
+            r = requests.get(final_api_url, headers=headers, timeout=30)
             raw_response = r.text
         except Exception as e_req:
              return {'error': f"Request Failed: {str(e_req)}"}
@@ -115,7 +118,7 @@ def fetch_media_task(url):
             return {'error': "Invalid JSON Response", 'raw': raw_response}
             
         if not data:
-            return {'error': "No Media Found (Empty Response)", 'raw': raw_response}
+            return {'error': "No Media Found (Empty Response)", 'raw': raw_response, 'request_url': r.url}
             
         media_list = []
         msgs = []
@@ -253,12 +256,13 @@ async def process_queue():
                 # Error
                 error_reason = result.get('error', 'Unknown')
                 raw_data = result.get('raw', None)
+                req_url = result.get('request_url', 'Unknown')
                 
                 # Send Raw Debug if available
                 if raw_data:
                     try:
                          with open('api_response.txt', 'w', encoding='utf-8') as f:
-                             f.write(str(raw_data))
+                             f.write(f"REQUEST URL: {req_url}\n\nRESPONSE:\n{str(raw_data)}")
                          await bot.send_file(GROUP_ERROR, 'api_response.txt', caption=f"API Debug: {url}", force_document=True)
                          os.remove('api_response.txt')
                     except: pass
