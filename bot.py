@@ -9,7 +9,6 @@ import random
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from telethon import TelegramClient, events
-import instaloader
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -73,68 +72,113 @@ async def update_status_message():
 
     try:
         text = (
-            "📊 **Bulk Processing Status**\n\n"
-            f"📨 **Total Tasks:** `{STATS['total']}`\n"
-            f"✅ **Completed:** `{STATS['completed']}`\n"
-            f"❌ **Failed:** `{STATS['failed']}`\n"
-            f"⏳ **Remaining:** `{STATS['remaining']}`\n\n"
-            "⚙️ _Processing..._"
+    try:
+        text = (
+            "Bulk Processing Status\n\n"
+            f"Total Tasks: {STATS['total']}\n"
+            f"Completed: {STATS['completed']}\n"
+            f"Failed: {STATS['failed']}\n"
+            f"Remaining: {STATS['remaining']}\n\n"
+            "Processing..."
         )
         
         if STATS['remaining'] == 0 and STATS['total'] > 0:
-            text += "\n\n✨ **All tasks completed!**"
+            text += "\n\nAll tasks completed!"
 
         await STATS['status_msg'].edit(text)
     except Exception as e:
         logger.error(f"Failed to update status message: {e}")
 
 def fetch_media_task(url):
-    """Synchronous function to fetch media links using Instaloader."""
+    """Fetch media using direct GraphQL query."""
     try:
         # Extract shortcode
-        # Supports /p/, /reel/, /tv/
         shortcode_match = re.search(r'(?:/p/|/reel/|/tv/)([a-zA-Z0-9_-]+)', url)
         if not shortcode_match:
-             return {'error': "Invalid URL format or could not extract shortcode"}
+             return {'error': "Invalid URL format"}
         
         shortcode = shortcode_match.group(1)
         
-        # Initialize Instaloader locally 
-        L = instaloader.Instaloader()
+        # GraphQL Endpoint construction
+        # Using the doc_id seen in user logs: 8845758582119845
+        graphql_url = "https://www.instagram.com/graphql/query"
+        params = {
+            'variables': f'{{"shortcode":"{shortcode}"}}',
+            'doc_id': '8845758582119845',
+            'server_timestamps': 'true'
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'X-IG-App-ID': '936619743392459' # Standard public app id
+        }
 
-        try:
-            # Fetch Post Metadata
-            post = instaloader.Post.from_shortcode(L.context, shortcode)
-        except Exception as e:
-             return {'error': f"Metadata Fetch Failed: {e}"}
+        resp = requests.get(graphql_url, params=params, headers=headers, timeout=30)
         
-        media_items = []
-        
-        # Check if Sidecar (Album/Carousel)
-        if post.typename == 'GraphSidecar':
-            for node in post.get_sidecar_nodes():
-                if node.is_video:
-                    if node.video_url:
-                        media_items.append({'url': node.video_url, 'is_video': True})
-                else:
-                    media_items.append({'url': node.display_url, 'is_video': False})
-        
-        # Check if Video
-        elif post.is_video:
-            if post.video_url:
-                media_items.append({'url': post.video_url, 'is_video': True})
-        
-        # Image
-        else:
-            media_items.append({'url': post.url, 'is_video': False})
-            
-        if not media_items:
-             return {'error': "No media found in post"}
+        if resp.status_code != 200:
+             return {'error': f"HTTP {resp.status_code}"}
              
-        return {'media': media_items}
+        try:
+            data = resp.json()
+        except:
+             return {'error': "Invalid JSON Response"}
+             
+        if 'data' not in data or not data['data'].get('xdt_shortcode_media'):
+            return {'error': "Invalid"} # Becomes 'Error - Invalid' in logic
+            
+        media_node = data['data']['xdt_shortcode_media']
+        media_items = []
+        side_channel_msgs = []
+        
+        type_name = media_node.get('__typename')
+        
+        # 1. Image
+        if type_name == 'XDTGraphImage':
+            media_items.append({'url': media_node['display_url'], 'is_video': False})
+            
+        # 2. Video
+        elif type_name == 'XDTGraphVideo':
+            vid_url = media_node.get('video_url')
+            if vid_url:
+                media_items.append({'url': vid_url, 'is_video': True})
+                
+            if media_node.get('has_audio') is False:
+                side_channel_msgs.append(f"Error - No Audio\n{url}")
+                
+        # 3. Sidecar
+        elif type_name == 'XDTGraphSidecar':
+            side_channel_msgs.append(f"Multiple Sidecar\n{url}") # Notification req
+            
+            edges = media_node.get('edge_sidecar_to_children', {}).get('edges', [])
+            for edge in edges:
+                node = edge.get('node', {})
+                node_type = node.get('__typename')
+                
+                if node_type == 'XDTGraphImage':
+                     if node.get('display_url'):
+                        media_items.append({'url': node['display_url'], 'is_video': False})
+                        
+                elif node_type == 'XDTGraphVideo':
+                    if node.get('video_url'):
+                        media_items.append({'url': node['video_url'], 'is_video': True})
+                        
+                    if node.get('has_audio') is False:
+                        # Prevent duplicate no-audio msgs for same link? 
+                        # User req implies simply sending it.
+                        # Using set to avoid spamming 10 msgs for 10 slides?
+                        # Let's append, unique filter later if needed.
+                        side_channel_msgs.append(f"Error - No Audio\n{url}")
+        
+        if not media_items:
+             return {'error': "No media found"}
+             
+        # Remove duplicates from side_channel_msgs to avoid spamming
+        side_channel_msgs = list(set(side_channel_msgs))
+             
+        return {'media': media_items, 'msgs': side_channel_msgs}
 
     except Exception as e:
-        return {'error': f"Exception: {type(e).__name__} - {str(e)}"}
+        return {'error': f"Exception: {str(e)}"}
 
 def download_media_task(media_url, is_video=False):
     """Synchronous function to download media to temp file."""
@@ -204,15 +248,28 @@ async def process_queue():
                             
                         await asyncio.sleep(1) # Rate limit
                 
+                # Send Side Channel Messages (No Audio, Multiple Sidecar)
+                if 'msgs' in result:
+                    for msg in result['msgs']:
+                        try:
+                            await bot.send_message(GROUP_ERROR, msg, link_preview=False)
+                        except:
+                            pass
+
                 STATS['completed'] += 1
             else:
                 # Error
                 error_reason = result.get('error', 'Unknown')
-                raise Exception(error_reason)
+                
+                # Check for "Invalid" specific error
+                if "Invalid" in error_reason:
+                     await bot.send_message(GROUP_ERROR, f"Error - Invalid\n{url}", link_preview=False)
+                else:
+                     raise Exception(error_reason) # Trigger standard error handler
 
         except Exception as e:
             STATS['failed'] += 1
-            logger.error(f"Failed {url}: {e}")
+            # Standard error handler for exceptions
             try:
                 await bot.send_message(
                     GROUP_ERROR, 
