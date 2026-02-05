@@ -72,8 +72,6 @@ async def update_status_message():
 
     try:
         text = (
-    try:
-        text = (
             "Bulk Processing Status\n\n"
             f"Total Tasks: {STATS['total']}\n"
             f"Completed: {STATS['completed']}\n"
