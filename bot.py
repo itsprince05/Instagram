@@ -91,92 +91,88 @@ async def update_status_message():
 
 
 def fetch_media_task(url):
-    """Fetch media using reelsvideo.io Scraper."""
+    """Fetch media using reelsvideo.io Scraper (Session + Tokens)."""
     try:
-        clean_link = url.split('?')[0].rstrip('/')
-        
-        # Extract shortcode/id
-        # supports /p/, /reel/, /tv/
-        shortcode = None
-        for pattern in [r'/p/([^/]+)', r'/reel/([^/]+)', r'/tv/([^/]+)']:
-            match = re.search(pattern, clean_link)
-            if match:
-                shortcode = match.group(1)
-                break
-        
-        if not shortcode:
-             # Fallback if URL is weird, just try to use base
-             target_endpoint = "https://reelsvideo.io/" # Fallback
-        else:
-             target_endpoint = f"https://reelsvideo.io/p/{shortcode}/"
-
+        session = requests.Session()
         headers = {
             'authority': 'reelsvideo.io',
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'accept-language': 'en-US,en;q=0.9',
-            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
             'origin': 'https://reelsvideo.io',
-            'referer': 'https://reelsvideo.io/',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
+            'referer': 'https://reelsvideo.io/'
         }
+        session.headers.update(headers)
+        
+        # 1. GET Root to get Tokens (tt, ts)
+        try:
+            r_home = session.get("https://reelsvideo.io/", timeout=15)
+            html_home = r_home.text
+            
+            tt = "e47e128f3c05058167cd0489686f359d" # Fallback
+            ts = int(time.time())
+            
+            # Extract tt
+            tt_match = re.search(r'name="tt" value="([^"]+)"', html_home)
+            if tt_match:
+                tt = tt_match.group(1)
+            
+            # Extract ts
+            ts_match = re.search(r'name="ts" value="([^"]+)"', html_home)
+            if ts_match:
+                ts = ts_match.group(1)
+                
+        except Exception as e:
+            logger.error(f"Failed to get tokens: {e}")
+            tt = "e47e128f3c05058167cd0489686f359d"
+            ts = int(time.time())
+
+        # 2. POST to Extract
+        # Try finding shortcode logic again
+        clean_link = url.split('?')[0].rstrip('/')
+        
+        # NOTE: The site form action is "/" in HTMX.
+        # But user cURL showed /p/SHORTCODE/
+        # We will try posting to ROOT first, as that is standard for these forms.
         
         data = {
             'id': url,
             'locale': 'en',
-            'tt': 'e47e128f3c05058167cd0489686f359d', # Cloned from user HTML, likely standard or ignored
-            'ts': int(time.time())
+            'tt': tt,
+            'ts': ts
         }
         
-        # 1. POST Request
-        # Note: We try to hit the root first if specific endpoint fails, but user provided specific endpoint logic.
-        # Let's try root "/" first as that is what the HTML form says (data-hx-post="/")
-        r = requests.post("https://reelsvideo.io/", headers=headers, data=data, timeout=30)
-        
-        if r.status_code != 200:
-             # Try the specific path as fallback if root fails or returns 404
-             r = requests.post(target_endpoint, headers=headers, data=data, timeout=30)
-             if r.status_code != 200:
-                  return {'error': f"HTTP {r.status_code}"}
-        
+        r = session.post("https://reelsvideo.io/", data=data, timeout=30)
         html = r.text
+        
         media_list = []
         msgs = []
         
-        # 2. Extract Download Links using Regex
-        # Looking for <a ... href="..." ... class="... download_link ... type_videos ..." ...>
-        # The HTML sample has `class="... download_link type_videos ..."` and `type_images`
-        
-        # Regex to capture href inside an <a> tag that contains 'download_link'
-        # Group 1: href
-        # We assume the href is double-quoted
-        
-        # Find all <a> tags
+        # 3. Extract Links
         a_tags = re.findall(r'<a[^>]+>', html)
-        
         for tag in a_tags:
             if 'download_link' in tag:
-                # Extract href
                 href_match = re.search(r'href="([^"]+)"', tag)
                 if href_match:
                     media_url = href_match.group(1)
-                    
-                    # Determine type
                     is_video = 'type_videos' in tag
                     
-                    # Add to list
-                    # Avoid duplicates
                     if not any(m['url'] == media_url for m in media_list):
                         media_list.append({
                             'url': media_url,
                             'is_video': is_video
                         })
-        
-        # Check if sidecar detected (more than 1 item)
+
         if len(media_list) > 1:
             msgs.append(f"Multiple Sidecar\n{url}")
             
         if not media_list:
-             return {'error': "No Media Found (reelsvideo.io)"}
+             # DEBUG: Save HTML to see why
+             try:
+                 with open("debug_dump.html", "w", encoding="utf-8") as f:
+                     f.write(html)
+             except: pass
+             return {'error': "No Media Found (Start Dump)"}
 
         msgs = list(set(msgs))
         return {'media': media_list, 'msgs': msgs}
@@ -284,18 +280,18 @@ async def process_queue():
                 pass
         
         # DEBUG: Send Dump if exists
-        if os.path.exists('debug_dump.json'):
+        if os.path.exists('debug_dump.html'):
             try:
                 await bot.send_file(
                     GROUP_ERROR,
-                    'debug_dump.json',
-                    caption=f"Debug Data for: {url}",
+                    'debug_dump.html',
+                    caption=f"Debug HTML for: {url}",
                     force_document=True
                 )
             except Exception as e_dump:
                 logger.error(f"Failed to send debug dump: {e_dump}")
             finally:
-                os.remove('debug_dump.json')
+                os.remove('debug_dump.html')
         
         STATS['remaining'] = QUEUE.qsize()
         STATS['remaining'] = QUEUE.qsize()
