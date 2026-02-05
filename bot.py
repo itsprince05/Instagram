@@ -169,7 +169,9 @@ def fetch_media_task(url):
                 info = ydl.extract_info(url, download=False)
             except yt_dlp.utils.DownloadError as e:
                 err_str = str(e).lower()
-                if 'login required' in err_str:
+                if 'login required' in err_str or 'sign in' in err_str or '401' in err_str:
+                     if os.path.exists('cookies.txt'):
+                         return {'error': "Cookies Expired. Please upload new cookies.txt"}
                      return {'error': "Login Required (Use /login)"}
                 if 'checkpoint' in err_str or 'challenge' in err_str:
                      return {'error': "Checkpoint Required (Open App & Approve)"}
@@ -359,6 +361,20 @@ async def logout_handler(event):
             pass
     
     await event.respond(f"Logged out. Session cleared.")
+
+@bot.on(events.NewMessage)
+async def file_handler(event):
+    """Handle cookies.txt upload."""
+    if not event.is_private or not event.file:
+        return
+
+    # Check if it looks like a text file
+    filename = event.file.name or ""
+    if filename.lower().endswith('.txt') or 'cookies' in filename.lower():
+        path = await event.download_media(file='cookies.txt')
+        await event.respond(f"✅ **Cookies File Uploaded!**\nSaved as: {path}\n\nThe bot will now use these cookies for extraction. Try sending a link now.")
+        # Stop propagation so message_handler doesn't trigger
+        raise events.StopPropagation
 
 @bot.on(events.NewMessage)
 async def message_handler(event):
