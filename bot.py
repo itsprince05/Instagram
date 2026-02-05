@@ -91,88 +91,57 @@ async def update_status_message():
 
 
 def fetch_media_task(url):
-    """Fetch media using reelsvideo.io Scraper (Session + Tokens)."""
+    """Fetch media using PrinceApps API."""
     try:
-        session = requests.Session()
+        api_url = "https://princeapps.com/insta.php"
         headers = {
-            'authority': 'reelsvideo.io',
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'accept-language': 'en-US,en;q=0.9',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-            'origin': 'https://reelsvideo.io',
-            'referer': 'https://reelsvideo.io/'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
         }
-        session.headers.update(headers)
         
-        # 1. GET Root to get Tokens (tt, ts)
+        # 1. Call API
+        # verify=False because sometimes these custom APIs exhibit SSL issues, though not strictly required if valid
+        r = requests.get(api_url, params={'url': url}, headers=headers, timeout=30)
+        
+        if r.status_code != 200:
+            return {'error': f"API Error: HTTP {r.status_code}"}
+            
         try:
-            r_home = session.get("https://reelsvideo.io/", timeout=15)
-            html_home = r_home.text
+            data = r.json()
+        except:
+            return {'error': "Invalid JSON Response"}
             
-            tt = "e47e128f3c05058167cd0489686f359d" # Fallback
-            ts = int(time.time())
+        if not data:
+            return {'error': "No Media Found (Empty Response)"}
             
-            # Extract tt
-            tt_match = re.search(r'name="tt" value="([^"]+)"', html_home)
-            if tt_match:
-                tt = tt_match.group(1)
-            
-            # Extract ts
-            ts_match = re.search(r'name="ts" value="([^"]+)"', html_home)
-            if ts_match:
-                ts = ts_match.group(1)
-                
-        except Exception as e:
-            logger.error(f"Failed to get tokens: {e}")
-            tt = "e47e128f3c05058167cd0489686f359d"
-            ts = int(time.time())
-
-        # 2. POST to Extract
-        # Try finding shortcode logic again
-        clean_link = url.split('?')[0].rstrip('/')
-        
-        # NOTE: The site form action is "/" in HTMX.
-        # But user cURL showed /p/SHORTCODE/
-        # We will try posting to ROOT first, as that is standard for these forms.
-        
-        data = {
-            'id': url,
-            'locale': 'en',
-            'tt': tt,
-            'ts': ts
-        }
-        
-        r = session.post("https://reelsvideo.io/", data=data, timeout=30)
-        html = r.text
-        
         media_list = []
         msgs = []
         
-        # 3. Extract Links
-        a_tags = re.findall(r'<a[^>]+>', html)
-        for tag in a_tags:
-            if 'download_link' in tag:
-                href_match = re.search(r'href="([^"]+)"', tag)
-                if href_match:
-                    media_url = href_match.group(1)
-                    is_video = 'type_videos' in tag
-                    
-                    if not any(m['url'] == media_url for m in media_list):
-                        media_list.append({
-                            'url': media_url,
-                            'is_video': is_video
-                        })
-
+        # 2. Process URLs
+        # The API returns a simple list of string URLs
+        if isinstance(data, list):
+            for media_url in data:
+                # We need to determine if it's a video or image
+                # Perform a HEAD request
+                is_video = False
+                try:
+                    head_r = requests.head(media_url, timeout=10)
+                    ct = head_r.headers.get('Content-Type', '').lower()
+                    if 'video' in ct:
+                        is_video = True
+                except:
+                    # Fallback guess if valid URL
+                    pass
+                
+                media_list.append({
+                    'url': media_url,
+                    'is_video': is_video
+                })
+        
         if len(media_list) > 1:
             msgs.append(f"Multiple Sidecar\n{url}")
             
         if not media_list:
-             # DEBUG: Save HTML to see why
-             try:
-                 with open("debug_dump.html", "w", encoding="utf-8") as f:
-                     f.write(html)
-             except: pass
-             return {'error': "No Media Found (Start Dump)"}
+             return {'error': "No Media Found"}
 
         msgs = list(set(msgs))
         return {'media': media_list, 'msgs': msgs}
