@@ -324,6 +324,7 @@ async def process_queue():
         STATS['remaining'] = QUEUE.qsize()
         STATS['remaining'] = QUEUE.qsize()
         await update_status_message()
+        logger.info("Waiting 5 seconds before next task...")
         await asyncio.sleep(5) # 5 Second Delay (User Request)
             
     IS_PROCESSING = False
