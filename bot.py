@@ -35,8 +35,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Hello! I can download Instagram content and tell you your Chat ID.\n"
         "Commands:\n"
-        "/id - Get your Chat/Group ID\n"
-        "/update - Update the bot from GitHub"
     )
 
 async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -67,7 +65,8 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 f.write(str(chat_id))
             
             # Restart the script
-            os.execv(sys.executable, ['python'] + sys.argv)
+            # Use sys.executable for the program argument to ensure correct path resolution
+            os.execv(sys.executable, [sys.executable] + sys.argv)
         else:
             await update.message.reply_text(f"Git Pull Failed.\nError:\n{error.decode()}")
             
