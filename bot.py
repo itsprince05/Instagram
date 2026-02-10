@@ -28,6 +28,42 @@ logger = logging.getLogger(__name__)
 # Initialize Instaloader
 L = instaloader.Instaloader()
 
+# --- INSTAGRAM LOGIN ---
+# To fix 401 errors, we must login.
+INSTA_USER = os.getenv("INSTA_USER") 
+INSTA_PASS = os.getenv("INSTA_PASS")
+
+def instagram_login():
+    if not INSTA_USER or not INSTA_PASS:
+        logger.warning("Instagram credentials not found in environment variables. Running anonymously (might fail).")
+        return
+
+    try:
+        logger.info(f"Attempting login for {INSTA_USER}...")
+        # Check if session file exists
+        session_file = f"session-{INSTA_USER}"
+        if os.path.exists(session_file):
+             try:
+                L.load_session_from_file(INSTA_USER, filename=session_file)
+                logger.info("Session loaded successfully.")
+                return 
+             except Exception as e:
+                logger.warning(f"Failed to load session: {e}. Trying fresh login.")
+
+        # Login if no session or session failed
+        L.login(INSTA_USER, INSTA_PASS)
+        L.save_session_to_file(filename=session_file)
+        logger.info("Logged in and session saved.")
+            
+    except Exception as e:
+        logger.error(f"Instagram Login Failed: {e}")
+
+# Perform login on startup
+try:
+    instagram_login()
+except Exception as e:
+    logger.error(f"Login routine failed: {e}")
+
 # File to store chat_id for post-update notification
 UPDATE_STATUS_FILE = "update_status.txt"
 
