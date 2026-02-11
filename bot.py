@@ -1,17 +1,32 @@
 
+import sys
 import os
 import re
 import logging
 import subprocess
 import asyncio
-from telethon import TelegramClient, events
-from instagrapi import Client
-from instagrapi.exceptions import (
-    ChallengeRequired,
-    TwoFactorRequired,
-    LoginRequired,
-    MediaNotFound
-)
+
+# Force immediate flushing of stdout to see logs in real-time
+sys.stdout.reconfigure(encoding='utf-8')
+
+print("Initializing Bot Libraries...")
+
+try:
+    from telethon import TelegramClient, events
+    print("Telethon imported successfully.")
+    from instagrapi import Client
+    from instagrapi.exceptions import (
+        ChallengeRequired,
+        TwoFactorRequired,
+        LoginRequired,
+        MediaNotFound
+    )
+    print("Instagrapi imported successfully.")
+except ImportError as e:
+    print(f"CRITICAL ERROR: Missing libraries. Did you run 'pip install -r requirements.txt'?\nError: {e}")
+    input("Press Enter to exit...")
+    sys.exit(1)
+
 import config
 
 # Configure Logging
@@ -21,8 +36,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+print(f"Connecting to Telegram with Bot Token: {config.BOT_TOKEN[:10]}...")
 # Initialize Telegram Client
 bot = TelegramClient('bot_session', config.API_ID, config.API_HASH).start(bot_token=config.BOT_TOKEN)
+print("Telegram Client Started!")
 
 # Initialize Instagram Client
 cl = Client()
@@ -31,45 +48,51 @@ def login_instagram():
     """
     Handles Instagram Login with Session Management.
     """
+    print("\n--- INSTAGRAM LOGIN START ---")
     logger.info("Attempting to login to Instagram...")
     
     # Check if session file exists
     if os.path.exists(config.SESSION_FILE):
+        print(f"Found session file: {config.SESSION_FILE}")
         logger.info("Found session file. Loading...")
         try:
             cl.load_settings(config.SESSION_FILE)
             cl.login(config.INSTAGRAM_USERNAME, config.INSTAGRAM_PASSWORD)
+            print("Login Successful using Session!")
             logger.info("Logged in using session settings!")
             return True
         except (ChallengeRequired, TwoFactorRequired) as e:
+            print(f"Session Failed: {e}")
             logger.error(f"Session Login Failed (Challenge/2FA): {e}")
             logger.warning("Please delete the session file and login manually if this persists.")
             return False
         except Exception as e:
+            print(f"Session Login Error: {e}")
             logger.error(f"Session Login Failed: {e}")
             return False
 
     # If no session file, try fresh login
     try:
+        print(f"Attempting Fresh Login for user: {config.INSTAGRAM_USERNAME}...")
         logger.info("Attempting fresh login...")
         cl.login(config.INSTAGRAM_USERNAME, config.INSTAGRAM_PASSWORD)
         cl.dump_settings(config.SESSION_FILE)
+        print("Fresh Login Successful! Session saved.")
         logger.info("Fresh login successful. Session saved.")
         return True
     
     except ChallengeRequired:
+        print("CRITICAL: Instagram Challenge Required. Login Failed.")
         logger.critical("Login Failed: Challenge Required. Please login manually locally to generate a session file.")
         return False
     except TwoFactorRequired:
+        print("CRITICAL: 2FA Required. Login Failed.")
         logger.critical("Login Failed: 2FA Required.")
         return False
     except Exception as e:
+        print(f"Login Error: {e}")
         logger.error(f"Login Failed: {e}")
         return False
-
-# Attempt Login on Startup
-if not login_instagram():
-    logger.warning("Instagram login failed. Bot may not operate correctly for private content.")
 
 # -----------------
 # Utility Commands
@@ -80,18 +103,16 @@ async def handle_start(event):
     """
     Sanity check to see if bot is online.
     """
-    await event.reply("✅ Bot is Online!\n\nSend me an Instagram link to download.\nOptions:\n/id - Get Chat ID\n/update - Update Bot (Admin only)")
     print(f"Received /start from {event.chat_id}")
+    await event.reply("✅ Bot is Online!\n\nSend me an Instagram link to download.\nOptions:\n/id - Get Chat ID\n/update - Update Bot (Admin only)")
 
 @bot.on(events.NewMessage(pattern='/id'))
 async def handle_id_command(event):
     """
-    Returns the chat ID of the current chat/group,
-    formatted as monospaced text for easy copying.
+    Returns the chat ID of the current chat/group.
     """
-    # Simply reply with the chat ID in backticks
-    await event.reply(f"`{event.chat_id}`")
     print(f"Received /id from {event.chat_id}")
+    await event.reply(f"`{event.chat_id}`")
 
 @bot.on(events.NewMessage(pattern='/update'))
 async def handle_update_command(event):
@@ -137,21 +158,14 @@ async def handle_update_command(event):
 @bot.on(events.NewMessage)
 async def handle_all_messages(event):
     """
-    Global message handler to route instagram links and debug.
+    Global message handler to route instagram links.
     """
     if not event.text:
         return
 
-    # Debug print to console to verify bot 'sees' messages
-    # print(f"New Message from {event.chat_id}: {event.text[:50]}")
-
-    # 1. Ignore commands (handled by other decorators, but this global one sees them too unless we filter)
-    # Actually, Telethon runs all handlers that match.
-    # We will specifically look for instagram links here.
-
     # Regex for Instagram
     if re.search(r'instagram\.com', event.text, re.IGNORECASE):
-        # Avoid processing /update or /id if they somehow contain instagram.com (unlikely but safe)
+        # Avoid processing /update or /id if they somehow contain instagram.com
         if event.text.strip().startswith('/'):
             return
 
@@ -240,5 +254,21 @@ async def handle_all_messages(event):
                 os.remove(file_path)
 
 if __name__ == '__main__':
-    print("Bot is running...")
-    bot.run_until_disconnected()
+    print("\n-----------------------------------")
+    print("       BOT STARTUP SEQUENCE        ")
+    print("-----------------------------------")
+    
+    # Attempt Login on Startup
+    if not login_instagram():
+        print("WARNING: Instagram login failed. Bot may not operate correctly for private content.")
+    else:
+        print("Instagram Login: OK")
+        
+    print("\nBot is now running and waiting for messages...")
+    print("Send /start to your bot in Telegram to verify connectivity.")
+    
+    try:
+        bot.run_until_disconnected()
+    except Exception as e:
+        print(f"Bot Crashed: {e}")
+        input("Press Enter to exit...")
