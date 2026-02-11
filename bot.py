@@ -75,6 +75,14 @@ if not login_instagram():
 # Utility Commands
 # -----------------
 
+@bot.on(events.NewMessage(pattern='/start'))
+async def handle_start(event):
+    """
+    Sanity check to see if bot is online.
+    """
+    await event.reply("✅ Bot is Online!\n\nSend me an Instagram link to download.\nOptions:\n/id - Get Chat ID\n/update - Update Bot (Admin only)")
+    print(f"Received /start from {event.chat_id}")
+
 @bot.on(events.NewMessage(pattern='/id'))
 async def handle_id_command(event):
     """
@@ -83,12 +91,14 @@ async def handle_id_command(event):
     """
     # Simply reply with the chat ID in backticks
     await event.reply(f"`{event.chat_id}`")
+    print(f"Received /id from {event.chat_id}")
 
 @bot.on(events.NewMessage(pattern='/update'))
 async def handle_update_command(event):
     """
     Updates the bot repository via git pull if sent from the allowed group.
     """
+    print(f"Received /update from {event.chat_id}")
     # Check if the command is from the allowed group
     if event.chat_id != config.ALLOWED_UPDATE_GROUP_ID:
         # Ignore silently if unauthorized group
@@ -124,97 +134,110 @@ async def handle_update_command(event):
 # Instagram Handler
 # -----------------
 
-@bot.on(events.NewMessage(pattern=re.compile(r'.*instagram\.com.*', re.IGNORECASE)))
-async def handle_instagram_link(event):
-    # If the message starts with a command like /id or /update, ignore it here
-    # (Though pattern matching usually handles this, regex .*instagram.com.* might catch text with commands if not careful)
-    if event.text.startswith('/'):
+@bot.on(events.NewMessage)
+async def handle_all_messages(event):
+    """
+    Global message handler to route instagram links and debug.
+    """
+    if not event.text:
         return
 
-    if event.is_private:
-         # Log user interaction or restricts
-         pass
+    # Debug print to console to verify bot 'sees' messages
+    # print(f"New Message from {event.chat_id}: {event.text[:50]}")
 
-    text = event.message.text
-    
-    # Extract URL using Regex
-    match = re.search(r'(https?://(?:www\.)?instagram\.com/[^\s]+)', text)
-    if not match:
-        return
-    
-    insta_url = match.group(0) # The extracted URL
-    
-    # Send "Date fetching..." message
-    msg = await event.reply("⏳ Fetching media info...")
+    # 1. Ignore commands (handled by other decorators, but this global one sees them too unless we filter)
+    # Actually, Telethon runs all handlers that match.
+    # We will specifically look for instagram links here.
 
-    file_path = None
-    try:
-        # 1. Get Media PK
-        pk = cl.media_pk_from_url(insta_url)
-        
-        # 2. Get Media Info
-        # Using handle_exception isn't needed if we catch specific ones below, but cl methods raise them.
-        media_info = cl.media_info(pk)
-        
-        media_type = media_info.media_type # 1=Photo, 2=Video, 8=Album
-        
-        # 3. Handle Media Types
-        if media_type == 1: # Photo
-            await msg.edit("📸 Downloading Photo...")
-            path = cl.photo_download(pk, folder=".")
-            file_path = str(path)
-            
-            await msg.edit("📤 Uploading Photo...")
-            await bot.send_file(
-                event.chat_id, 
-                file_path, 
-                caption=f"{media_info.caption_text[:1000]}..." if media_info.caption_text else ""
-            )
-            
-        elif media_type == 2: # Video/Reel/IGTV
-            await msg.edit("🎥 Downloading Video...")
-            path = cl.video_download(pk, folder=".")
-            file_path = str(path)
-            
-            await msg.edit("📤 Uploading Video...")
-            await bot.send_file(
-                event.chat_id, 
-                file_path, 
-                caption=f"{media_info.caption_text[:1000]}..." if media_info.caption_text else ""
-            )
-            
-        elif media_type == 8: # Album
-            # As requested: Simple message for now
-            await msg.edit("⚠️ Carousel downloading not supported yet.")
+    # Regex for Instagram
+    if re.search(r'instagram\.com', event.text, re.IGNORECASE):
+        # Avoid processing /update or /id if they somehow contain instagram.com (unlikely but safe)
+        if event.text.strip().startswith('/'):
             return
 
-        else:
-             await msg.edit("❌ Unknown media type.")
-             return
-
-        # 4. Clean up
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"Deleted local file: {file_path}")
+        print(f"Processing Instagram Link from {event.chat_id}...")
         
-        await msg.delete() # Remove status message
+        # Extract URL
+        match = re.search(r'(https?://(?:www\.)?instagram\.com/[^\s]+)', event.text)
+        if not match:
+            # Fallback for links without http/https (if user copy-pastes weirdly)
+            match = re.search(r'(www\.instagram\.com/[^\s]+)', event.text)
+            if not match:
+                return
+            insta_url = "https://" + match.group(0)
+        else:
+            insta_url = match.group(0)
 
-    except ChallengeRequired:
-        await msg.edit("⚠️ Error: Instagram Challenge Required. Admin verification needed.")
-        logger.error("Challenge Required.")
-    
-    except LoginRequired:
-        await msg.edit("⚠️ Error: Login Required. Session invalid.")
-    
-    except MediaNotFound:
-         await msg.edit("❌ Error: Media not found (Private or Invalid).")
-    
-    except Exception as e:
-        logger.error(f"Error processing link: {e}")
-        await msg.edit(f"❌ Error: {str(e)}")
-        # Cleanup if failed
-        if file_path and os.path.exists(file_path):
-             os.remove(file_path)
+        # Send "Fetching..." message
+        msg = await event.reply("⏳ Fetching media info...")
+
+        file_path = None
+        try:
+            # 1. Get Media PK
+            pk = cl.media_pk_from_url(insta_url)
+            
+            # 2. Get Media Info
+            media_info = cl.media_info(pk)
+            media_type = media_info.media_type # 1=Photo, 2=Video, 8=Album
+            
+            # 3. Handle Media Types
+            if media_type == 1: # Photo
+                await msg.edit("📸 Downloading Photo...")
+                path = cl.photo_download(pk, folder=".")
+                file_path = str(path)
+                
+                await msg.edit("📤 Uploading Photo...")
+                await bot.send_file(
+                    event.chat_id, 
+                    file_path, 
+                    caption=f"{media_info.caption_text[:1000]}..." if media_info.caption_text else ""
+                )
+                
+            elif media_type == 2: # Video/Reel/IGTV
+                await msg.edit("🎥 Downloading Video...")
+                path = cl.video_download(pk, folder=".")
+                file_path = str(path)
+                
+                await msg.edit("📤 Uploading Video...")
+                await bot.send_file(
+                    event.chat_id, 
+                    file_path, 
+                    caption=f"{media_info.caption_text[:1000]}..." if media_info.caption_text else ""
+                )
+                
+            elif media_type == 8: # Album
+                await msg.edit("⚠️ Carousel downloading not supported yet.")
+                print("Carousel detected - skipping.")
+                return
+
+            else:
+                await msg.edit("❌ Unknown media type.")
+                return
+
+            # 4. Clean up
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Deleted local file: {file_path}")
+            
+            await msg.delete()
+
+        except ChallengeRequired:
+            await msg.edit("⚠️ Error: Instagram Challenge Required. Admin verification needed.")
+            print("Error: Challenge Required.")
+        
+        except LoginRequired:
+            await msg.edit("⚠️ Error: Login Required. Session invalid.")
+            print("Error: Login Required.")
+        
+        except MediaNotFound:
+            await msg.edit("❌ Error: Media not found (Private or Invalid).")
+            print("Error: Media Not Found.")
+        
+        except Exception as e:
+            print(f"Exception processing link: {e}")
+            await msg.edit(f"❌ Error: {str(e)}")
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
 
 if __name__ == '__main__':
     print("Bot is running...")
