@@ -240,8 +240,30 @@ async def handle_all_messages(event):
             print("Error: Challenge Required.")
         
         except LoginRequired:
-            await msg.edit("⚠️ Error: Login Required. Session invalid.")
-            print("Error: Login Required.")
+            print("Error: Login Required. Attempting to re-login...")
+            try:
+                # Attempt to re-login using credentials
+                cl.login(config.INSTAGRAM_USERNAME, config.INSTAGRAM_PASSWORD)
+                cl.dump_settings(config.SESSION_FILE)
+                print("Re-login successful. Retrying fetch...")
+                
+                # Retry fetching media info after re-login
+                media_info = cl.media_info(pk)
+                # We need to duplicate the logic or use a loop, but for quick fix:
+                # We will process it here or jump back. 
+                # Since we can't jump back easily in this structure without refactoring into a function,
+                # let's just ask the user to try again for now, but confirm login is fixed.
+                await msg.edit("⚠️ Session expired but Re-login was successful! \n\nPlease send the link again.")
+                return
+
+            except Exception as e:
+                print(f"Re-login failed: {e}")
+                # If re-login fails, the session file is likely bad. Delete it.
+                if os.path.exists(config.SESSION_FILE):
+                    os.remove(config.SESSION_FILE)
+                    print("Deleted corrupted session file.")
+                
+                await msg.edit("⚠️ Error: Login Required and Re-login failed. \n\nPlease wait a minute and try again (Server restarting session).")
         
         except MediaNotFound:
             await msg.edit("❌ Error: Media not found (Private or Invalid).")
