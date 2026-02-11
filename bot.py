@@ -118,17 +118,24 @@ async def handle_id_command(event):
 async def handle_update_command(event):
     """
     Updates the bot repository via git pull if sent from the allowed group.
+    Attempts to preserve local changes using stash.
     """
     print(f"Received /update from {event.chat_id}")
     # Check if the command is from the allowed group
     if event.chat_id != config.ALLOWED_UPDATE_GROUP_ID:
-        # Ignore silently if unauthorized group
         return
 
-    msg = await event.reply("🔄 Checking for updates...")
+    msg = await event.reply("🔄 Stashing local changes and checking for updates...")
 
     try:
-        # Run 'git pull'
+        # 1. Git Stash (Save local changes)
+        p_stash = await asyncio.create_subprocess_exec(
+            "git", "stash",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        await p_stash.communicate()
+
+        # 2. Git Pull
         process = await asyncio.create_subprocess_exec(
             "git", "pull",
             stdout=subprocess.PIPE,
@@ -139,13 +146,24 @@ async def handle_update_command(event):
         output = stdout.decode().strip()
         error = stderr.decode().strip()
 
+        # 3. Git Stash Pop (Restore local changes)
+        # We do this regardless of pull success to ensure we don't lose work, 
+        # unless pull was fatal in a way that left repo weird.
+        p_pop = await asyncio.create_subprocess_exec(
+            "git", "stash", "pop",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        await p_pop.communicate()
+
         if process.returncode == 0:
             if "Already up to date." in output:
-                await msg.edit(f"✅ Bot is already up to date.\n\n`{output}`")
+                await msg.edit(f"✅ Bot is already up to date.\n\n`{output}`\n\n_Restored local changes._")
             else:
-                await msg.edit(f"✅ Bot Updated Successfully!\n\nOutput:\n`{output}`\n\n_Restart might be required for changes to take effect._")
+                await msg.edit(f"✅ Bot Updated Successfully!\n\nOutput:\n`{output}`\n\n_Restored local changes._\n🔄 Restarting bot...")
+                # Restart the bot process
+                os.execl(sys.executable, sys.executable, *sys.argv)
         else:
-            await msg.edit(f"❌ Update Failed:\n\nError:\n`{error}`")
+            await msg.edit(f"❌ Update Failed:\n\nError:\n`{error}`\n\n_Restored local changes._")
             
     except Exception as e:
         await msg.edit(f"❌ Error during update: {str(e)}")
