@@ -1,0 +1,4 @@
+telethon
+instagrapi
+pillow
+python-dotenv
