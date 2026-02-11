@@ -267,21 +267,25 @@ async def handle_all_messages(event):
                 
                 # Retry fetching media info after re-login
                 media_info = cl.media_info(pk)
-                # We need to duplicate the logic or use a loop, but for quick fix:
-                # We will process it here or jump back. 
-                # Since we can't jump back easily in this structure without refactoring into a function,
-                # let's just ask the user to try again for now, but confirm login is fixed.
-                await msg.edit("⚠️ Session expired but Re-login was successful! \n\nPlease send the link again.")
+                # Since we can't jump back easily, ask user to retry.
+                await msg.edit("✅ Re-login successful! Session refreshed.\n\n🔄 Please click the link again to download.")
                 return
 
+            except ChallengeRequired:
+                print("CRITICAL: Challenge Required during re-login.")
+                await msg.edit("⚠️ **Instagram Challenge Required**\n\nThe bot cannot login automatically because Instagram is asking for verification.\n\n**Solution:**\n1. Stop the bot.\n2. Delete `session.json`.\n3. Login to Instagram manually on this device (or handle the challenge in code).\n4. Restart the bot.")
+            
+            except TwoFactorRequired:
+                await msg.edit("⚠️ **2FA Required**\n\nPlease disable 2FA temporarily or login manually to generate a session file.")
+
             except Exception as e:
-                print(f"Re-login failed: {e}")
+                print(f"Re-login failed details: {e}")
                 # If re-login fails, the session file is likely bad. Delete it.
                 if os.path.exists(config.SESSION_FILE):
                     os.remove(config.SESSION_FILE)
                     print("Deleted corrupted session file.")
                 
-                await msg.edit("⚠️ Error: Login Required and Re-login failed. \n\nPlease wait a minute and try again (Server restarting session).")
+                await msg.edit(f"❌ **Login Failed**\n\nReason: `{str(e)}`\n\n_Session file deleted. Please try again in 1 minute._")
         
         except MediaNotFound:
             await msg.edit("❌ Error: Media not found (Private or Invalid).")
